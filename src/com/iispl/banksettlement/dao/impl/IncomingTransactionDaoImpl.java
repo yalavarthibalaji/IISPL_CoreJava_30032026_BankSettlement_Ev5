@@ -26,6 +26,7 @@ import java.util.List;
  *   3. Never catch and silently ignore exceptions — always throw RuntimeException
  *   4. Generated keys are read back and set on the object after INSERT
  */
+
 public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
     // -----------------------------------------------------------------------
