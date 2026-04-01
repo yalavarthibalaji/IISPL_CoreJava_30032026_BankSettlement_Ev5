@@ -44,7 +44,11 @@ public class IngestionPipeline {
     }
 
     /**
+<<<<<<< HEAD
      * Submit payload for processing
+=======
+     * Submit payload for s
+>>>>>>> t1/balaji
      */
     public void ingest(SourceType sourceType, String rawPayload) {
 
