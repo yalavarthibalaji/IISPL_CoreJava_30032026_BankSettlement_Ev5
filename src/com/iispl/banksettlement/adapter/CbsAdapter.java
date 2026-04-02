@@ -15,109 +15,120 @@ import java.time.LocalDate;
  *
  * CBS sends transactions as pipe-delimited plain text strings.
  *
- * EXPECTED RAW PAYLOAD FORMAT FROM CBS:
- * "CBS-REF-001|CREDIT|50000.00|INR|2024-06-15|ACC001|ACC002" [0]sourceRef
- * [1]txnType [2]amount [3]currency [4]valueDate [5]debitAcc [6]creditAcc
+ * EXPECTED RAW PAYLOAD FORMAT (one line per transaction in cbs.txt):
+ *   sourceRef|txnType|amount|currency|valueDate|debitAccount|creditAccount
  *
- * This adapter parses that string and builds a canonical IncomingTransaction.
+ * EXAMPLE:
+ *   CBS-REF-001|CREDIT|50000.00|INR|2024-06-15|ACC001|ACC002
  *
- * Implements: TransactionAdapter (Strategy Pattern)
+ *   [0] sourceRef      — CBS reference number
+ *   [1] txnType        — CREDIT / DEBIT / REVERSAL
+ *   [2] amount         — transaction amount
+ *   [3] currency       — INR / USD etc.
+ *   [4] valueDate      — yyyy-MM-dd
+ *   [5] debitAccount   — account number being debited
+ *   [6] creditAccount  — account number being credited
  */
 public class CbsAdapter implements TransactionAdapter {
 
-	// The SourceSystem object representing CBS — set once, reused for every
-	// transaction
-	private SourceSystem cbsSourceSystem;
+    private SourceSystem cbsSourceSystem;
 
-	// -----------------------------------------------------------------------
-	// Constructor
-	// -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Constructor
+    // -----------------------------------------------------------------------
 
-	public CbsAdapter() {
-		// Build the SourceSystem once and reuse it for all CBS transactions
-		this.cbsSourceSystem = new SourceSystem("CBS", // systemCode
-				ProtocolType.FLAT_FILE, // CBS uses file-drop / direct DB
-				"{\"protocol\":\"PIPE_DELIMITED\"}", // connectionConfig as JSON
-				true, // isActive
-				"cbs-support@bank.com" // contactEmail
-		);
-		this.cbsSourceSystem.setSourceSystemId(1L);
-		this.cbsSourceSystem.setCreatedBy("SYSTEM");
-	}
+    public CbsAdapter() {
+        this.cbsSourceSystem = new SourceSystem(
+            "CBS",
+            ProtocolType.FLAT_FILE,
+            "{\"protocol\":\"PIPE_DELIMITED\"}",
+            true,
+            "cbs-support@bank.com"
+        );
+        this.cbsSourceSystem.setSourceSystemId(1L);
+        this.cbsSourceSystem.setCreatedBy("SYSTEM");
+    }
 
-	// -----------------------------------------------------------------------
-	// TransactionAdapter implementation
-	// -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // TransactionAdapter implementation
+    // -----------------------------------------------------------------------
 
-	/**
-	 * Parses a CBS pipe-delimited payload and returns a canonical
-	 * IncomingTransaction.
-	 *
-	 * Example input: "CBS-REF-001|CREDIT|50000.00|INR|2024-06-15"
-	 */
-	@Override
-	public IncomingTransaction adapt(String rawPayload) {
+    @Override
+    public IncomingTransaction adapt(String rawPayload) {
 
-		// Guard: never process a null or blank payload
-		if (rawPayload == null || rawPayload.trim().isEmpty()) {
-			throw new IllegalArgumentException("CbsAdapter: rawPayload cannot be null or empty");
-		}
+        if (rawPayload == null || rawPayload.trim().isEmpty()) {
+            throw new IllegalArgumentException(
+                "CbsAdapter: rawPayload cannot be null or empty"
+            );
+        }
 
-		// Split by pipe delimiter
-		String[] parts = rawPayload.split("\\|");
+        // Skip comment lines (lines starting with #)
+        if (rawPayload.trim().startsWith("#")) {
+            throw new IllegalArgumentException(
+                "CbsAdapter: Skipping comment line"
+            );
+        }
 
-		// Guard: CBS format must have at least 5 fields
-		if (parts.length < 5) {
-			throw new IllegalArgumentException(
-					"CbsAdapter: Invalid CBS payload format. Expected at least 5 pipe-separated fields. Got: "
-							+ rawPayload);
-		}
+        String[] parts = rawPayload.split("\\|");
 
-		// Parse each field from the pipe-delimited string
-		String sourceRef = parts[0].trim();
-		String txnTypeStr = parts[1].trim();
-		BigDecimal amount = new BigDecimal(parts[2].trim());
-		String currency = parts[3].trim();
-		LocalDate valueDate = LocalDate.parse(parts[4].trim());
+        // Now requires 7 fields (added debitAccount and creditAccount)
+        if (parts.length < 7) {
+            throw new IllegalArgumentException(
+                "CbsAdapter: Invalid CBS payload. Expected 7 pipe-separated fields: " +
+                "sourceRef|txnType|amount|currency|valueDate|debitAccount|creditAccount. Got: " + rawPayload
+            );
+        }
 
-		// Convert the string txnType to the enum value
-		TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
+        String sourceRef         = parts[0].trim();
+        String txnTypeStr        = parts[1].trim();
+        BigDecimal amount        = new BigDecimal(parts[2].trim());
+        String currency          = parts[3].trim();
+        LocalDate valueDate      = LocalDate.parse(parts[4].trim());
+        String debitAccountNum   = parts[5].trim();
+        String creditAccountNum  = parts[6].trim();
 
-		// Build the normalized JSON payload for downstream processing
-		String normalizedPayload = buildNormalizedPayload(sourceRef, txnType, amount, currency, valueDate);
+        TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
 
-		// Build and return the canonical IncomingTransaction
-		IncomingTransaction txn = new IncomingTransaction(cbsSourceSystem, sourceRef, rawPayload, txnType, amount,
-				currency, valueDate, normalizedPayload);
+        String normalizedPayload = buildNormalizedPayload(
+            sourceRef, txnType, amount, currency, valueDate,
+            debitAccountNum, creditAccountNum
+        );
 
-		// Mark as VALIDATED since CBS payloads are pre-validated at source
-		txn.setProcessingStatus(ProcessingStatus.VALIDATED);
-		txn.setCreatedBy("CBS_ADAPTER");
+        IncomingTransaction txn = new IncomingTransaction(
+            cbsSourceSystem, sourceRef, rawPayload,
+            txnType, amount, currency, valueDate, normalizedPayload
+        );
 
-		return txn;
-	}
+        txn.setDebitAccountNumber(debitAccountNum);
+        txn.setCreditAccountNumber(creditAccountNum);
+        txn.setProcessingStatus(ProcessingStatus.VALIDATED);
+        txn.setCreatedBy("CBS_ADAPTER");
 
-	/**
-	 * This adapter handles CBS source type.
-	 */
-	@Override
-	public SourceType getSourceType() {
-		return SourceType.CBS;
-	}
+        return txn;
+    }
 
-	// -----------------------------------------------------------------------
-	// Private helper
-	// -----------------------------------------------------------------------
+    @Override
+    public SourceType getSourceType() {
+        return SourceType.CBS;
+    }
 
-	/**
-	 * Builds a standardised JSON string from parsed CBS fields. All adapters
-	 * produce the same JSON structure so downstream code doesn't need to know the
-	 * original format.
-	 */
-	private String buildNormalizedPayload(String sourceRef, TransactionType txnType, BigDecimal amount, String currency,
-			LocalDate valueDate) {
-		return "{" + "\"source\":\"CBS\"," + "\"sourceRef\":\"" + sourceRef + "\"," + "\"txnType\":\"" + txnType.name()
-				+ "\"," + "\"amount\":" + amount + "," + "\"currency\":\"" + currency + "\"," + "\"valueDate\":\""
-				+ valueDate + "\"" + "}";
-	}
+    // -----------------------------------------------------------------------
+    // Private helper
+    // -----------------------------------------------------------------------
+
+    private String buildNormalizedPayload(String sourceRef, TransactionType txnType,
+                                           BigDecimal amount, String currency,
+                                           LocalDate valueDate,
+                                           String debitAcc, String creditAcc) {
+        return "{" +
+               "\"source\":\"CBS\"," +
+               "\"sourceRef\":\"" + sourceRef + "\"," +
+               "\"txnType\":\"" + txnType.name() + "\"," +
+               "\"amount\":" + amount + "," +
+               "\"currency\":\"" + currency + "\"," +
+               "\"valueDate\":\"" + valueDate + "\"," +
+               "\"debitAccount\":\"" + debitAcc + "\"," +
+               "\"creditAccount\":\"" + creditAcc + "\"" +
+               "}";
+    }
 }

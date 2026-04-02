@@ -13,21 +13,19 @@ import java.time.LocalDate;
 /**
  * SwiftAdapter — Adapter for SWIFT cross-border international transactions.
  *
- * SWIFT (Society for Worldwide Interbank Financial Telecommunication) is the
- * global messaging network used for international money transfers.
- * The standard message type for payments is MT103 (Single Customer Credit Transfer).
+ * SWIFT messages arrive via Message Queue (MQ).
  *
- * SWIFT sends messages via Message Queue (MQ).
+ * EXPECTED RAW PAYLOAD FORMAT (one line per transaction in swift.txt):
+ *   :20:SWIFTREF:32A:YYMMDDCCYamt:23B:opcode:50K:debitAcc:59:creditAcc
  *
- * EXPECTED RAW PAYLOAD FORMAT (simplified MT103-style colon-delimited):
- *   ":20:SWIFT-REF-2024001:32A:240615USD75000.00:23B:CREDIT"
+ * EXAMPLE:
+ *   :20:SWIFT-REF-001:32A:240615USD75000.00:23B:CRED:50K:NOSTRO-001:59:ACC002
  *
- *   Field codes:
- *     :20: = Transaction Reference Number (sourceRef)
- *     :32A:= Value Date + Currency + Amount  (YYMMDD + 3-char currency + amount)
- *     :23B:= Bank Operation Code             (txnType)
- *
- * Implements: TransactionAdapter (Strategy Pattern)
+ *   :20: = Transaction Reference Number (sourceRef)
+ *   :32A: = YYMMDD + 3-char currency + amount
+ *   :23B: = Operation code (CRED / DEBT / RVSL)
+ *   :50K: = Ordering account (debit account number)
+ *   :59:  = Beneficiary account (credit account number)
  */
 public class SwiftAdapter implements TransactionAdapter {
 
@@ -40,7 +38,7 @@ public class SwiftAdapter implements TransactionAdapter {
     public SwiftAdapter() {
         this.swiftSourceSystem = new SourceSystem(
             "SWIFT",
-            ProtocolType.MESSAGE_QUEUE,        // SWIFT messages arrive via MQ
+            ProtocolType.MESSAGE_QUEUE,
             "{\"mq\":\"SWIFT_MQ\",\"queue\":\"SWIFT.INBOUND\"}",
             true,
             "swift-ops@bank.com"
@@ -53,12 +51,6 @@ public class SwiftAdapter implements TransactionAdapter {
     // TransactionAdapter implementation
     // -----------------------------------------------------------------------
 
-    /**
-     * Parses a simplified SWIFT MT103 payload and returns a canonical IncomingTransaction.
-     *
-     * Example input:
-     *   ":20:SWIFT-REF-2024001:32A:240615USD75000.00:23B:CREDIT"
-     */
     @Override
     public IncomingTransaction adapt(String rawPayload) {
 
@@ -68,60 +60,55 @@ public class SwiftAdapter implements TransactionAdapter {
             );
         }
 
-        // Extract field :20: — Transaction Reference Number
-        String sourceRef = extractSwiftField(rawPayload, ":20:");
+        // Skip comment lines
+        if (rawPayload.trim().startsWith("#")) {
+            throw new IllegalArgumentException("SwiftAdapter: Skipping comment line");
+        }
 
-        // Extract field :32A: — ValueDate + Currency + Amount (e.g. "240615USD75000.00")
-        String field32A  = extractSwiftField(rawPayload, ":32A:");
+        String sourceRef        = extractSwiftField(rawPayload, ":20:");
+        String field32A         = extractSwiftField(rawPayload, ":32A:");
+        String opCode           = extractSwiftField(rawPayload, ":23B:");
+        String debitAccountNum  = extractSwiftField(rawPayload, ":50K:");
+        String creditAccountNum = extractSwiftField(rawPayload, ":59:");
 
-        // Extract field :23B: — Operation code maps to our TransactionType
-        String opCode    = extractSwiftField(rawPayload, ":23B:");
-
-        if (sourceRef == null || field32A == null || opCode == null) {
+        if (sourceRef == null || field32A == null || opCode == null
+                || debitAccountNum == null || creditAccountNum == null) {
             throw new IllegalArgumentException(
-                "SwiftAdapter: Missing required MT103 fields (:20:, :32A:, :23B:) in payload: " + rawPayload
+                "SwiftAdapter: Missing required MT103 fields (:20:,:32A:,:23B:,:50K:,:59:). Got: " + rawPayload
             );
         }
 
         // Parse :32A: field — format is YYMMDD + 3-letter currency + amount
-        // Example: "240615USD75000.00"
-        //           ^^^^^^ = date (YYMMDD)
-        //                 ^^^ = currency
-        //                    ^^^^^^^^ = amount
         if (field32A.length() < 10) {
             throw new IllegalArgumentException(
-                "SwiftAdapter: :32A: field too short to parse: " + field32A
+                "SwiftAdapter: :32A: field too short: " + field32A
             );
         }
 
-        String yymmdd    = field32A.substring(0, 6);    // "240615"
-        String currency  = field32A.substring(6, 9);    // "USD"
-        String amountStr = field32A.substring(9);       // "75000.00"
+        String yymmdd    = field32A.substring(0, 6);
+        String currency  = field32A.substring(6, 9);
+        String amountStr = field32A.substring(9);
 
-        // Convert YYMMDD to LocalDate (prefix "20" to make it YYYY)
         int year  = 2000 + Integer.parseInt(yymmdd.substring(0, 2));
         int month = Integer.parseInt(yymmdd.substring(2, 4));
         int day   = Integer.parseInt(yymmdd.substring(4, 6));
         LocalDate valueDate = LocalDate.of(year, month, day);
 
-        BigDecimal amount   = new BigDecimal(amountStr);
+        BigDecimal amount       = new BigDecimal(amountStr);
         TransactionType txnType = parseSwiftOpCode(opCode);
 
         String normalizedPayload = buildNormalizedPayload(
-            sourceRef, txnType, amount, currency, valueDate
+            sourceRef, txnType, amount, currency, valueDate,
+            debitAccountNum, creditAccountNum
         );
 
         IncomingTransaction txn = new IncomingTransaction(
-            swiftSourceSystem,
-            sourceRef,
-            rawPayload,
-            txnType,
-            amount,
-            currency,
-            valueDate,
-            normalizedPayload
+            swiftSourceSystem, sourceRef, rawPayload,
+            txnType, amount, currency, valueDate, normalizedPayload
         );
 
+        txn.setDebitAccountNumber(debitAccountNum);
+        txn.setCreditAccountNumber(creditAccountNum);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("SWIFT_ADAPTER");
 
@@ -137,30 +124,19 @@ public class SwiftAdapter implements TransactionAdapter {
     // Private helpers
     // -----------------------------------------------------------------------
 
-    /**
-     * Extracts the value of a SWIFT field tag from the message.
-     *
-     * Example: extractSwiftField(":20:SWIFTREF001:32A:...", ":20:")
-     *          returns "SWIFTREF001"
-     *
-     * @param message  Full SWIFT message string
-     * @param fieldTag The field tag to search for (e.g. ":20:", ":32A:")
-     * @return The value after the tag until the next colon-tag or end of string
-     */
     private String extractSwiftField(String message, String fieldTag) {
         int startIndex = message.indexOf(fieldTag);
-        if (startIndex == -1) {
-            return null;
-        }
+        if (startIndex == -1) return null;
 
-        // Skip past the field tag itself
         int valueStart = startIndex + fieldTag.length();
+        int valueEnd   = message.length();
 
-        // Find next field tag (starts with ":" after current position)
-        int valueEnd = message.length();
+        // Find next field tag
         for (int i = valueStart + 1; i < message.length() - 1; i++) {
-            // A new field starts with ":" followed by alphanumeric chars and another ":"
-            if (message.charAt(i) == ':') {
+            if (message.charAt(i) == ':' && i + 1 < message.length()
+                    && Character.isLetterOrDigit(message.charAt(i + 1))) {
+                // Check if this looks like a field tag (colon at start)
+                // We find the next occurrence of ":" that starts a new field
                 valueEnd = i;
                 break;
             }
@@ -169,29 +145,14 @@ public class SwiftAdapter implements TransactionAdapter {
         return message.substring(valueStart, valueEnd).trim();
     }
 
-    /**
-     * Maps a SWIFT bank operation code to our internal TransactionType enum.
-     *
-     * Common SWIFT operation codes:
-     *   CRED = Customer Credit Transfer → CREDIT
-     *   DEBT = Customer Debit           → DEBIT
-     *   RVSL = Reversal                 → REVERSAL
-     *   SPAY = Standing Payment         → CREDIT
-     */
     private TransactionType parseSwiftOpCode(String opCode) {
-        if (opCode == null) {
-            return TransactionType.CREDIT; // default fallback
-        }
+        if (opCode == null) return TransactionType.CREDIT;
         switch (opCode.toUpperCase().trim()) {
-            case "CRED":
-            case "CREDIT":
-            case "SPAY":
+            case "CRED": case "CREDIT": case "SPAY":
                 return TransactionType.CREDIT;
-            case "DEBT":
-            case "DEBIT":
+            case "DEBT": case "DEBIT":
                 return TransactionType.DEBIT;
-            case "RVSL":
-            case "REVERSAL":
+            case "RVSL": case "REVERSAL":
                 return TransactionType.REVERSAL;
             default:
                 return TransactionType.CREDIT;
@@ -200,14 +161,17 @@ public class SwiftAdapter implements TransactionAdapter {
 
     private String buildNormalizedPayload(String sourceRef, TransactionType txnType,
                                            BigDecimal amount, String currency,
-                                           LocalDate valueDate) {
+                                           LocalDate valueDate,
+                                           String debitAcc, String creditAcc) {
         return "{" +
                "\"source\":\"SWIFT\"," +
                "\"sourceRef\":\"" + sourceRef + "\"," +
                "\"txnType\":\"" + txnType.name() + "\"," +
                "\"amount\":" + amount + "," +
                "\"currency\":\"" + currency + "\"," +
-               "\"valueDate\":\"" + valueDate + "\"" +
+               "\"valueDate\":\"" + valueDate + "\"," +
+               "\"debitAccount\":\"" + debitAcc + "\"," +
+               "\"creditAccount\":\"" + creditAcc + "\"" +
                "}";
     }
 }
