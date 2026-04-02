@@ -65,6 +65,18 @@ public class IncomingTransaction extends BaseEntity {
     // (always JSON format regardless of original source format)
     private String normalizedPayload;
 
+    // The actual account number string of the account being debited
+    // e.g. "ACC001" — set by the adapter after parsing the raw payload
+    private String debitAccountNumber;
+
+    // The actual account number string of the account being credited
+    // e.g. "ACC002" — set by the adapter after parsing the raw payload
+    private String creditAccountNumber;
+
+    // If this transaction failed validation or processing, the reason is stored here
+    // null if transaction is valid and successfully processed
+    private String failureReason;
+
     // -----------------------------------------------------------------------
     // Constructors
     // -----------------------------------------------------------------------
@@ -201,6 +213,30 @@ public class IncomingTransaction extends BaseEntity {
         this.normalizedPayload = normalizedPayload;
     }
 
+    public String getDebitAccountNumber() {
+        return debitAccountNumber;
+    }
+
+    public void setDebitAccountNumber(String debitAccountNumber) {
+        this.debitAccountNumber = debitAccountNumber;
+    }
+
+    public String getCreditAccountNumber() {
+        return creditAccountNumber;
+    }
+
+    public void setCreditAccountNumber(String creditAccountNumber) {
+        this.creditAccountNumber = creditAccountNumber;
+    }
+
+    public String getFailureReason() {
+        return failureReason;
+    }
+
+    public void setFailureReason(String failureReason) {
+        this.failureReason = failureReason;
+    }
+
     // -----------------------------------------------------------------------
     // toString
     // -----------------------------------------------------------------------
@@ -215,7 +251,10 @@ public class IncomingTransaction extends BaseEntity {
                ", amount=" + amount +
                ", currency='" + currency + '\'' +
                ", valueDate=" + valueDate +
+               ", debitAccountNumber='" + debitAccountNumber + '\'' +
+               ", creditAccountNumber='" + creditAccountNumber + '\'' +
                ", processingStatus=" + processingStatus +
+               ", failureReason='" + failureReason + '\'' +
                ", ingestTimestamp=" + ingestTimestamp +
                '}';
     }
