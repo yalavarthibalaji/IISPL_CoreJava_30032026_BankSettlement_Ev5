@@ -14,24 +14,15 @@ import java.sql.SQLException;
 /**
  * CustomerDaoImpl — JDBC implementation of CustomerDao.
  *
- * Uses ConnectionPool.getConnection() for all DB operations.
- * All resources are closed in finally blocks.
- * Always uses PreparedStatement — never raw Statement.
+ * Uses ConnectionPool.getConnection() for all DB operations. All resources are
+ * closed in finally blocks. Always uses PreparedStatement — never raw
+ * Statement.
  *
- * TABLE EXPECTED IN DB:
- *   customer (
- *     id               BIGSERIAL PRIMARY KEY,
- *     first_name       VARCHAR(100) NOT NULL,
- *     last_name        VARCHAR(100) NOT NULL,
- *     email            VARCHAR(150),
- *     kyc_status       VARCHAR(20) NOT NULL,
- *     customer_tier    VARCHAR(30),
- *     onboarding_date  DATE,
- *     created_at       TIMESTAMP,
- *     updated_at       TIMESTAMP,
- *     created_by       VARCHAR(100),
- *     version          INT DEFAULT 0
- *   )
+ * TABLE EXPECTED IN DB: customer ( customer_id BIGSERIAL PRIMARY KEY, -- FIX:
+ * was "id" first_name VARCHAR(50) NOT NULL, last_name VARCHAR(50) NOT NULL,
+ * email VARCHAR(100) NOT NULL UNIQUE, kyc_status VARCHAR(20) NOT NULL,
+ * customer_tier VARCHAR(20), onboarding_date DATE, created_at TIMESTAMP,
+ * updated_at TIMESTAMP, created_by VARCHAR(50), version INT DEFAULT 0 )
  */
 public class CustomerDaoImpl implements CustomerDao {
 
@@ -39,15 +30,13 @@ public class CustomerDaoImpl implements CustomerDao {
     // SQL CONSTANTS
     // -----------------------------------------------------------------------
 
-    private static final String SQL_FIND_BY_ID =
-            "SELECT id, first_name, last_name, email, kyc_status, " +
-            "customer_tier, onboarding_date, created_by, version " +
-            "FROM customer " +
-            "WHERE id = ?";
+    // FIX: Changed "id" → "customer_id" in SELECT list and WHERE clause
+    private static final String SQL_FIND_BY_ID = "SELECT customer_id, first_name, last_name, email, kyc_status, "
+            + "customer_tier, onboarding_date, created_by, version " + "FROM customer " + "WHERE customer_id = ?";
 
-    private static final String SQL_IS_KYC_VERIFIED =
-            "SELECT COUNT(*) FROM customer " +
-            "WHERE id = ? AND kyc_status = 'VERIFIED'";
+    // FIX: Changed "id" → "customer_id" in WHERE clause
+    private static final String SQL_IS_KYC_VERIFIED = "SELECT COUNT(*) FROM customer "
+            + "WHERE customer_id = ? AND kyc_status = 'VERIFIED'";
 
     // -----------------------------------------------------------------------
     // findById()
@@ -62,9 +51,9 @@ public class CustomerDaoImpl implements CustomerDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps   = conn.prepareStatement(SQL_FIND_BY_ID);
+            ps = conn.prepareStatement(SQL_FIND_BY_ID);
             ps.setLong(1, customerId);
-            rs   = ps.executeQuery();
+            rs = ps.executeQuery();
 
             if (rs.next()) {
                 return mapRow(rs);
@@ -73,9 +62,7 @@ public class CustomerDaoImpl implements CustomerDao {
             return null;
 
         } catch (SQLException e) {
-            throw new RuntimeException(
-                "CustomerDaoImpl.findById() failed: " + e.getMessage(), e
-            );
+            throw new RuntimeException("CustomerDaoImpl.findById() failed: " + e.getMessage(), e);
         } finally {
             closeResources(rs, ps, conn);
         }
@@ -94,9 +81,9 @@ public class CustomerDaoImpl implements CustomerDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps   = conn.prepareStatement(SQL_IS_KYC_VERIFIED);
+            ps = conn.prepareStatement(SQL_IS_KYC_VERIFIED);
             ps.setLong(1, customerId);
-            rs   = ps.executeQuery();
+            rs = ps.executeQuery();
 
             if (rs.next()) {
                 return rs.getInt(1) > 0;
@@ -105,9 +92,7 @@ public class CustomerDaoImpl implements CustomerDao {
             return false;
 
         } catch (SQLException e) {
-            throw new RuntimeException(
-                "CustomerDaoImpl.isCustomerKycVerified() failed: " + e.getMessage(), e
-            );
+            throw new RuntimeException("CustomerDaoImpl.isCustomerKycVerified() failed: " + e.getMessage(), e);
         } finally {
             closeResources(rs, ps, conn);
         }
@@ -119,7 +104,9 @@ public class CustomerDaoImpl implements CustomerDao {
 
     private Customer mapRow(ResultSet rs) throws SQLException {
         Customer c = new Customer();
-        c.setId(rs.getLong("id"));
+        // FIX: Changed rs.getLong("id") → rs.getLong("customer_id") to match actual
+        // schema
+        c.setId(rs.getLong("customer_id"));
         c.setFirstName(rs.getString("first_name"));
         c.setLastName(rs.getString("last_name"));
         c.setEmail(rs.getString("email"));
@@ -139,8 +126,20 @@ public class CustomerDaoImpl implements CustomerDao {
     // -----------------------------------------------------------------------
 
     private void closeResources(ResultSet rs, PreparedStatement ps, Connection conn) {
-        try { if (rs   != null) rs.close();   } catch (SQLException ignored) {}
-        try { if (ps   != null) ps.close();   } catch (SQLException ignored) {}
-        try { if (conn != null) conn.close(); } catch (SQLException ignored) {}
+        try {
+            if (rs != null)
+                rs.close();
+        } catch (SQLException ignored) {
+        }
+        try {
+            if (ps != null)
+                ps.close();
+        } catch (SQLException ignored) {
+        }
+        try {
+            if (conn != null)
+                conn.close();
+        } catch (SQLException ignored) {
+        }
     }
 }
