@@ -14,25 +14,16 @@ import java.sql.SQLException;
 /**
  * AccountDaoImpl — JDBC implementation of AccountDao.
  *
- * Uses ConnectionPool.getConnection() for all DB operations.
- * All resources are closed in finally blocks.
- * Always uses PreparedStatement — never raw Statement.
+ * Uses ConnectionPool.getConnection() for all DB operations. All resources are
+ * closed in finally blocks. Always uses PreparedStatement — never raw
+ * Statement.
  *
- * TABLE EXPECTED IN DB:
- *   account (
- *     id              BIGSERIAL PRIMARY KEY,
- *     account_number  VARCHAR(50) UNIQUE NOT NULL,
- *     account_type    VARCHAR(30) NOT NULL,
- *     balance         NUMERIC(19,4) NOT NULL,
- *     currency        VARCHAR(3)  NOT NULL,
- *     customer_id     BIGINT REFERENCES customer(id),
- *     bank_id         BIGINT,
- *     status          VARCHAR(20) NOT NULL,
- *     created_at      TIMESTAMP,
- *     updated_at      TIMESTAMP,
- *     created_by      VARCHAR(100),
- *     version         INT DEFAULT 0
- *   )
+ * TABLE EXPECTED IN DB: account ( account_id BIGSERIAL PRIMARY KEY, -- FIX: was
+ * "id" account_number VARCHAR(50) UNIQUE NOT NULL, account_type VARCHAR(30) NOT
+ * NULL, balance NUMERIC(19,4) NOT NULL, currency VARCHAR(10) NOT NULL,
+ * customer_id BIGINT REFERENCES customer(customer_id), bank_id BIGINT, status
+ * VARCHAR(20) NOT NULL, created_at TIMESTAMP, updated_at TIMESTAMP, created_by
+ * VARCHAR(50), version INT DEFAULT 0 )
  */
 public class AccountDaoImpl implements AccountDao {
 
@@ -40,15 +31,12 @@ public class AccountDaoImpl implements AccountDao {
     // SQL CONSTANTS
     // -----------------------------------------------------------------------
 
-    private static final String SQL_FIND_BY_ACCOUNT_NUMBER =
-            "SELECT id, account_number, account_type, balance, currency, " +
-            "customer_id, bank_id, status, created_by, version " +
-            "FROM account " +
-            "WHERE account_number = ?";
+    // FIX: Changed "id" → "account_id" to match the actual Supabase schema
+    private static final String SQL_FIND_BY_ACCOUNT_NUMBER = "SELECT account_id, account_number, account_type, balance, currency, "
+            + "customer_id, bank_id, status, created_by, version " + "FROM account " + "WHERE account_number = ?";
 
-    private static final String SQL_IS_ACTIVE =
-            "SELECT COUNT(*) FROM account " +
-            "WHERE account_number = ? AND status = 'ACTIVE'";
+    private static final String SQL_IS_ACTIVE = "SELECT COUNT(*) FROM account "
+            + "WHERE account_number = ? AND status = 'ACTIVE'";
 
     // -----------------------------------------------------------------------
     // findByAccountNumber()
@@ -63,9 +51,9 @@ public class AccountDaoImpl implements AccountDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps   = conn.prepareStatement(SQL_FIND_BY_ACCOUNT_NUMBER);
+            ps = conn.prepareStatement(SQL_FIND_BY_ACCOUNT_NUMBER);
             ps.setString(1, accountNumber);
-            rs   = ps.executeQuery();
+            rs = ps.executeQuery();
 
             if (rs.next()) {
                 return mapRow(rs);
@@ -74,9 +62,7 @@ public class AccountDaoImpl implements AccountDao {
             return null;
 
         } catch (SQLException e) {
-            throw new RuntimeException(
-                "AccountDaoImpl.findByAccountNumber() failed: " + e.getMessage(), e
-            );
+            throw new RuntimeException("AccountDaoImpl.findByAccountNumber() failed: " + e.getMessage(), e);
         } finally {
             closeResources(rs, ps, conn);
         }
@@ -95,9 +81,9 @@ public class AccountDaoImpl implements AccountDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps   = conn.prepareStatement(SQL_IS_ACTIVE);
+            ps = conn.prepareStatement(SQL_IS_ACTIVE);
             ps.setString(1, accountNumber);
-            rs   = ps.executeQuery();
+            rs = ps.executeQuery();
 
             if (rs.next()) {
                 return rs.getInt(1) > 0;
@@ -106,9 +92,7 @@ public class AccountDaoImpl implements AccountDao {
             return false;
 
         } catch (SQLException e) {
-            throw new RuntimeException(
-                "AccountDaoImpl.isAccountActiveByNumber() failed: " + e.getMessage(), e
-            );
+            throw new RuntimeException("AccountDaoImpl.isAccountActiveByNumber() failed: " + e.getMessage(), e);
         } finally {
             closeResources(rs, ps, conn);
         }
@@ -120,7 +104,9 @@ public class AccountDaoImpl implements AccountDao {
 
     private Account mapRow(ResultSet rs) throws SQLException {
         Account acc = new Account();
-        acc.setId(rs.getLong("id"));
+        // FIX: Changed rs.getLong("id") → rs.getLong("account_id") to match actual
+        // schema
+        acc.setId(rs.getLong("account_id"));
         acc.setAccountNumber(rs.getString("account_number"));
         acc.setAccountType(AccountType.valueOf(rs.getString("account_type")));
         acc.setBalance(rs.getBigDecimal("balance"));
@@ -138,8 +124,20 @@ public class AccountDaoImpl implements AccountDao {
     // -----------------------------------------------------------------------
 
     private void closeResources(ResultSet rs, PreparedStatement ps, Connection conn) {
-        try { if (rs   != null) rs.close();   } catch (SQLException ignored) {}
-        try { if (ps   != null) ps.close();   } catch (SQLException ignored) {}
-        try { if (conn != null) conn.close(); } catch (SQLException ignored) {}
+        try {
+            if (rs != null)
+                rs.close();
+        } catch (SQLException ignored) {
+        }
+        try {
+            if (ps != null)
+                ps.close();
+        } catch (SQLException ignored) {
+        }
+        try {
+            if (conn != null)
+                conn.close();
+        } catch (SQLException ignored) {
+        }
     }
 }
