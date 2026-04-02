@@ -1,0 +1,146 @@
+package com.iispl.banksettlement.dao.impl;
+
+import com.iispl.banksettlement.dao.CustomerDao;
+import com.iispl.banksettlement.entity.Customer;
+import com.iispl.banksettlement.enums.KycStatus;
+import com.iispl.connectionpool.ConnectionPool;
+
+import java.sql.Connection;
+import java.sql.Date;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+
+/**
+ * CustomerDaoImpl — JDBC implementation of CustomerDao.
+ *
+ * Uses ConnectionPool.getConnection() for all DB operations.
+ * All resources are closed in finally blocks.
+ * Always uses PreparedStatement — never raw Statement.
+ *
+ * TABLE EXPECTED IN DB:
+ *   customer (
+ *     id               BIGSERIAL PRIMARY KEY,
+ *     first_name       VARCHAR(100) NOT NULL,
+ *     last_name        VARCHAR(100) NOT NULL,
+ *     email            VARCHAR(150),
+ *     kyc_status       VARCHAR(20) NOT NULL,
+ *     customer_tier    VARCHAR(30),
+ *     onboarding_date  DATE,
+ *     created_at       TIMESTAMP,
+ *     updated_at       TIMESTAMP,
+ *     created_by       VARCHAR(100),
+ *     version          INT DEFAULT 0
+ *   )
+ */
+public class CustomerDaoImpl implements CustomerDao {
+
+    // -----------------------------------------------------------------------
+    // SQL CONSTANTS
+    // -----------------------------------------------------------------------
+
+    private static final String SQL_FIND_BY_ID =
+            "SELECT id, first_name, last_name, email, kyc_status, " +
+            "customer_tier, onboarding_date, created_by, version " +
+            "FROM customer " +
+            "WHERE id = ?";
+
+    private static final String SQL_IS_KYC_VERIFIED =
+            "SELECT COUNT(*) FROM customer " +
+            "WHERE id = ? AND kyc_status = 'VERIFIED'";
+
+    // -----------------------------------------------------------------------
+    // findById()
+    // -----------------------------------------------------------------------
+
+    @Override
+    public Customer findById(Long customerId) {
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = ConnectionPool.getConnection();
+            ps   = conn.prepareStatement(SQL_FIND_BY_ID);
+            ps.setLong(1, customerId);
+            rs   = ps.executeQuery();
+
+            if (rs.next()) {
+                return mapRow(rs);
+            }
+
+            return null;
+
+        } catch (SQLException e) {
+            throw new RuntimeException(
+                "CustomerDaoImpl.findById() failed: " + e.getMessage(), e
+            );
+        } finally {
+            closeResources(rs, ps, conn);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // isCustomerKycVerified()
+    // -----------------------------------------------------------------------
+
+    @Override
+    public boolean isCustomerKycVerified(Long customerId) {
+
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+
+        try {
+            conn = ConnectionPool.getConnection();
+            ps   = conn.prepareStatement(SQL_IS_KYC_VERIFIED);
+            ps.setLong(1, customerId);
+            rs   = ps.executeQuery();
+
+            if (rs.next()) {
+                return rs.getInt(1) > 0;
+            }
+
+            return false;
+
+        } catch (SQLException e) {
+            throw new RuntimeException(
+                "CustomerDaoImpl.isCustomerKycVerified() failed: " + e.getMessage(), e
+            );
+        } finally {
+            closeResources(rs, ps, conn);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helper — map one ResultSet row to Customer object
+    // -----------------------------------------------------------------------
+
+    private Customer mapRow(ResultSet rs) throws SQLException {
+        Customer c = new Customer();
+        c.setId(rs.getLong("id"));
+        c.setFirstName(rs.getString("first_name"));
+        c.setLastName(rs.getString("last_name"));
+        c.setEmail(rs.getString("email"));
+        c.setKycStatus(KycStatus.valueOf(rs.getString("kyc_status")));
+        c.setCustomerTier(rs.getString("customer_tier"));
+        Date d = rs.getDate("onboarding_date");
+        if (d != null) {
+            c.setOnboardingDate(d.toLocalDate());
+        }
+        c.setCreatedBy(rs.getString("created_by"));
+        c.setVersion(rs.getInt("version"));
+        return c;
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers — close JDBC resources safely
+    // -----------------------------------------------------------------------
+
+    private void closeResources(ResultSet rs, PreparedStatement ps, Connection conn) {
+        try { if (rs   != null) rs.close();   } catch (SQLException ignored) {}
+        try { if (ps   != null) ps.close();   } catch (SQLException ignored) {}
+        try { if (conn != null) conn.close(); } catch (SQLException ignored) {}
+    }
+}

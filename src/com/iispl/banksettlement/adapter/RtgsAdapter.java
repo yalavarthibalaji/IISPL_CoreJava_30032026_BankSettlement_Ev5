@@ -13,26 +13,21 @@ import java.time.LocalDate;
 /**
  * RtgsAdapter — Adapter for the Real-Time Gross Settlement (RTGS) system.
  *
- * RTGS is used for high-value, time-critical interbank transfers.
- * In India, RTGS is managed by the Reserve Bank of India (RBI).
- * Minimum transaction value: Rs. 2,00,000.
- *
  * RTGS sends transactions as JSON via REST API webhooks.
+ * Each line in rtgs.json is one standalone JSON object.
  *
- * EXPECTED RAW PAYLOAD FORMAT FROM RTGS (JSON string):
- *   {
- *     "rtgsRef"   : "RTGS20240615001",
- *     "txnType"   : "CREDIT",
- *     "amount"    : "500000.00",
- *     "currency"  : "INR",
- *     "valueDate" : "2024-06-15"
- *   }
+ * EXPECTED RAW PAYLOAD FORMAT (one JSON object per line in rtgs.json):
+ * {
+ *   "rtgsRef"      : "RTGS20240615001",
+ *   "txnType"      : "CREDIT",
+ *   "amount"       : "500000.00",
+ *   "currency"     : "INR",
+ *   "valueDate"    : "2024-06-15",
+ *   "debitAccount" : "NOSTRO-001",
+ *   "creditAccount": "ACC002"
+ * }
  *
- * NOTE: In real production code, you would use a JSON library (like Jackson or Gson).
- * Since this is a Core Java training project with no external libraries, we do
- * basic manual JSON parsing here using String operations.
- *
- * Implements: TransactionAdapter (Strategy Pattern)
+ * NOTE: Manual JSON parsing — no external library needed for core Java training.
  */
 public class RtgsAdapter implements TransactionAdapter {
 
@@ -45,7 +40,7 @@ public class RtgsAdapter implements TransactionAdapter {
     public RtgsAdapter() {
         this.rtgsSourceSystem = new SourceSystem(
             "RTGS",
-            ProtocolType.REST_API,             // RTGS pushes via REST webhooks
+            ProtocolType.REST_API,
             "{\"endpoint\":\"https://rtgs.rbi.org.in/webhook\"}",
             true,
             "rtgs-support@rbi.org.in"
@@ -58,12 +53,6 @@ public class RtgsAdapter implements TransactionAdapter {
     // TransactionAdapter implementation
     // -----------------------------------------------------------------------
 
-    /**
-     * Parses an RTGS JSON payload and returns a canonical IncomingTransaction.
-     *
-     * Example input:
-     *   {"rtgsRef":"RTGS20240615001","txnType":"CREDIT","amount":"500000.00","currency":"INR","valueDate":"2024-06-15"}
-     */
     @Override
     public IncomingTransaction adapt(String rawPayload) {
 
@@ -73,23 +62,30 @@ public class RtgsAdapter implements TransactionAdapter {
             );
         }
 
-        // Manual JSON field extraction (no external library needed)
-        String sourceRef   = extractJsonField(rawPayload, "rtgsRef");
-        String txnTypeStr  = extractJsonField(rawPayload, "txnType");
-        String amountStr   = extractJsonField(rawPayload, "amount");
-        String currency    = extractJsonField(rawPayload, "currency");
-        String valueDateStr = extractJsonField(rawPayload, "valueDate");
+        // Skip comment lines
+        if (rawPayload.trim().startsWith("#")) {
+            throw new IllegalArgumentException("RtgsAdapter: Skipping comment line");
+        }
 
-        // Validate that all required fields were found
+        String sourceRef       = extractJsonField(rawPayload, "rtgsRef");
+        String txnTypeStr      = extractJsonField(rawPayload, "txnType");
+        String amountStr       = extractJsonField(rawPayload, "amount");
+        String currency        = extractJsonField(rawPayload, "currency");
+        String valueDateStr    = extractJsonField(rawPayload, "valueDate");
+        String debitAccountNum = extractJsonField(rawPayload, "debitAccount");
+        String creditAccountNum= extractJsonField(rawPayload, "creditAccount");
+
         if (sourceRef == null || txnTypeStr == null || amountStr == null
-                || currency == null || valueDateStr == null) {
+                || currency == null || valueDateStr == null
+                || debitAccountNum == null || creditAccountNum == null) {
             throw new IllegalArgumentException(
-                "RtgsAdapter: Missing required fields in payload: " + rawPayload
+                "RtgsAdapter: Missing required fields. Expected: rtgsRef, txnType, amount, " +
+                "currency, valueDate, debitAccount, creditAccount. Got: " + rawPayload
             );
         }
 
-        BigDecimal amount     = new BigDecimal(amountStr);
-        LocalDate  valueDate  = LocalDate.parse(valueDateStr);
+        BigDecimal amount      = new BigDecimal(amountStr);
+        LocalDate  valueDate   = LocalDate.parse(valueDateStr);
         TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
 
         // RTGS minimum amount validation — must be >= 2,00,000 INR
@@ -100,20 +96,17 @@ public class RtgsAdapter implements TransactionAdapter {
         }
 
         String normalizedPayload = buildNormalizedPayload(
-            sourceRef, txnType, amount, currency, valueDate
+            sourceRef, txnType, amount, currency, valueDate,
+            debitAccountNum, creditAccountNum
         );
 
         IncomingTransaction txn = new IncomingTransaction(
-            rtgsSourceSystem,
-            sourceRef,
-            rawPayload,
-            txnType,
-            amount,
-            currency,
-            valueDate,
-            normalizedPayload
+            rtgsSourceSystem, sourceRef, rawPayload,
+            txnType, amount, currency, valueDate, normalizedPayload
         );
 
+        txn.setDebitAccountNumber(debitAccountNum);
+        txn.setCreditAccountNumber(creditAccountNum);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("RTGS_ADAPTER");
 
@@ -129,53 +122,46 @@ public class RtgsAdapter implements TransactionAdapter {
     // Private helpers
     // -----------------------------------------------------------------------
 
-    /**
-     * Extracts a value from a simple flat JSON string by field name.
-     *
-     * Works for: {"key":"value"} format only.
-     * Does NOT handle nested JSON, arrays, or numbers without quotes.
-     * For production, replace with Jackson ObjectMapper.
-     *
-     * @param json      The JSON string to parse
-     * @param fieldName The key whose value you want
-     * @return          The string value, or null if not found
-     */
     private String extractJsonField(String json, String fieldName) {
-        // Look for: "fieldName":"value"  or  "fieldName":value
         String searchKey = "\"" + fieldName + "\":";
         int keyIndex = json.indexOf(searchKey);
-        if (keyIndex == -1) {
-            return null;
-        }
+        if (keyIndex == -1) return null;
 
         int valueStart = keyIndex + searchKey.length();
-        boolean isQuoted = json.charAt(valueStart) == '"';
+
+        // Skip whitespace after colon
+        while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
+            valueStart++;
+        }
+
+        boolean isQuoted = (valueStart < json.length() && json.charAt(valueStart) == '"');
 
         if (isQuoted) {
-            // Value is a quoted string — find content between quotes
             int openQuote  = valueStart;
             int closeQuote = json.indexOf('"', openQuote + 1);
+            if (closeQuote == -1) return null;
             return json.substring(openQuote + 1, closeQuote);
         } else {
-            // Value is a number — find until comma or closing brace
             int endIndex = json.indexOf(',', valueStart);
-            if (endIndex == -1) {
-                endIndex = json.indexOf('}', valueStart);
-            }
+            if (endIndex == -1) endIndex = json.indexOf('}', valueStart);
+            if (endIndex == -1) endIndex = json.length();
             return json.substring(valueStart, endIndex).trim();
         }
     }
 
     private String buildNormalizedPayload(String sourceRef, TransactionType txnType,
                                            BigDecimal amount, String currency,
-                                           LocalDate valueDate) {
+                                           LocalDate valueDate,
+                                           String debitAcc, String creditAcc) {
         return "{" +
                "\"source\":\"RTGS\"," +
                "\"sourceRef\":\"" + sourceRef + "\"," +
                "\"txnType\":\"" + txnType.name() + "\"," +
                "\"amount\":" + amount + "," +
                "\"currency\":\"" + currency + "\"," +
-               "\"valueDate\":\"" + valueDate + "\"" +
+               "\"valueDate\":\"" + valueDate + "\"," +
+               "\"debitAccount\":\"" + debitAcc + "\"," +
+               "\"creditAccount\":\"" + creditAcc + "\"" +
                "}";
     }
 }

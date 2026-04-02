@@ -13,143 +13,160 @@ import java.time.LocalDate;
 /**
  * FintechAdapter — Adapter for third-party Fintech API transactions.
  *
- * Fintech partners (e.g., Razorpay, PayU, BillDesk, Stripe) integrate with our
- * bank via REST webhooks and send JSON payloads.
+ * Fintech partners (Razorpay, PayU etc.) send JSON via REST webhooks.
+ * Each line in fintech.json is one standalone JSON object.
  *
- * EXPECTED RAW PAYLOAD FORMAT (JSON string from Fintech partner): {
- * "partnerRef" : "RAZORPAY-TXN-8829", "type" : "CREDIT", "value" : "12500.75",
- * "ccy" : "INR", "settlDate" : "2024-06-15", "partnerCode" : "RAZORPAY" }
+ * EXPECTED RAW PAYLOAD FORMAT (one JSON object per line in fintech.json):
+ * {
+ *   "partnerRef"    : "RAZORPAY-TXN-001",
+ *   "type"          : "CREDIT",
+ *   "value"         : "12500.75",
+ *   "ccy"           : "INR",
+ *   "settlDate"     : "2024-06-15",
+ *   "partnerCode"   : "RAZORPAY",
+ *   "debitAccount"  : "ACC001",
+ *   "creditAccount" : "ACC002"
+ * }
  *
- * Note: Fintech partners use different JSON key names than our internal system.
- * - "partnerRef" instead of "sourceRef" - "type" instead of "txnType" - "value"
- * instead of "amount" - "ccy" instead of "currency" - "settlDate" instead of
- * "valueDate"
- *
- * This adapter's job is to bridge that naming difference.
- *
- * Implements: TransactionAdapter (Strategy Pattern)
+ * NOTE: Fintech uses different key names than our internal standard.
+ *   "partnerRef"  → sourceRef
+ *   "type"        → txnType
+ *   "value"       → amount
+ *   "ccy"         → currency
+ *   "settlDate"   → valueDate
  */
 public class FintechAdapter implements TransactionAdapter {
 
-	private SourceSystem fintechSourceSystem;
+    private SourceSystem fintechSourceSystem;
 
-	// -----------------------------------------------------------------------
-	// Constructor
-	// -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Constructor
+    // -----------------------------------------------------------------------
 
-	public FintechAdapter() {
-		this.fintechSourceSystem = new SourceSystem("FINTECH", ProtocolType.REST_API,
-				"{\"endpoint\":\"https://api.bank.com/fintech/webhook\",\"authType\":\"API_KEY\"}", true,
-				"fintech-integration@bank.com");
-		this.fintechSourceSystem.setSourceSystemId(6L);
-		this.fintechSourceSystem.setCreatedBy("SYSTEM");
-	}
+    public FintechAdapter() {
+        this.fintechSourceSystem = new SourceSystem(
+            "FINTECH",
+            ProtocolType.REST_API,
+            "{\"endpoint\":\"https://api.bank.com/fintech/webhook\",\"authType\":\"API_KEY\"}",
+            true,
+            "fintech-integration@bank.com"
+        );
+        this.fintechSourceSystem.setSourceSystemId(6L);
+        this.fintechSourceSystem.setCreatedBy("SYSTEM");
+    }
 
-	// -----------------------------------------------------------------------
-	// TransactionAdapter implementation
-	// -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // TransactionAdapter implementation
+    // -----------------------------------------------------------------------
 
-	/**
-	 * Parses a Fintech partner JSON payload and returns a canonical
-	 * IncomingTransaction.
-	 *
-	 * Example input:
-	 * {"partnerRef":"RAZORPAY-TXN-8829","type":"CREDIT","value":"12500.75","ccy":"INR","settlDate":"2024-06-15","partnerCode":"RAZORPAY"}
-	 */
-	@Override
-	public IncomingTransaction adapt(String rawPayload) {
+    @Override
+    public IncomingTransaction adapt(String rawPayload) {
 
-		if (rawPayload == null || rawPayload.trim().isEmpty()) {
-			throw new IllegalArgumentException("FintechAdapter: rawPayload cannot be null or empty");
-		}
+        if (rawPayload == null || rawPayload.trim().isEmpty()) {
+            throw new IllegalArgumentException(
+                "FintechAdapter: rawPayload cannot be null or empty"
+            );
+        }
 
-		// Note: Fintech uses different key names — we map them to our standard names
-		String sourceRef = extractJsonField(rawPayload, "partnerRef");
-		String txnTypeStr = extractJsonField(rawPayload, "type");
-		String amountStr = extractJsonField(rawPayload, "value");
-		String currency = extractJsonField(rawPayload, "ccy");
-		String valueDateStr = extractJsonField(rawPayload, "settlDate");
-		String partnerCode = extractJsonField(rawPayload, "partnerCode");
+        // Skip comment lines
+        if (rawPayload.trim().startsWith("#")) {
+            throw new IllegalArgumentException("FintechAdapter: Skipping comment line");
+        }
 
-		// Validate required fields
-		if (sourceRef == null || txnTypeStr == null || amountStr == null || currency == null || valueDateStr == null) {
-			throw new IllegalArgumentException(
-					"FintechAdapter: Missing required fields in Fintech payload: " + rawPayload);
-		}
+        String sourceRef        = extractJsonField(rawPayload, "partnerRef");
+        String txnTypeStr       = extractJsonField(rawPayload, "type");
+        String amountStr        = extractJsonField(rawPayload, "value");
+        String currency         = extractJsonField(rawPayload, "ccy");
+        String valueDateStr     = extractJsonField(rawPayload, "settlDate");
+        String partnerCode      = extractJsonField(rawPayload, "partnerCode");
+        String debitAccountNum  = extractJsonField(rawPayload, "debitAccount");
+        String creditAccountNum = extractJsonField(rawPayload, "creditAccount");
 
-		BigDecimal amount = new BigDecimal(amountStr);
-		LocalDate valueDate = LocalDate.parse(valueDateStr);
-		TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
+        if (sourceRef == null || txnTypeStr == null || amountStr == null
+                || currency == null || valueDateStr == null
+                || debitAccountNum == null || creditAccountNum == null) {
+            throw new IllegalArgumentException(
+                "FintechAdapter: Missing required fields. Expected: partnerRef, type, value, ccy, " +
+                "settlDate, debitAccount, creditAccount. Got: " + rawPayload
+            );
+        }
 
-		// Prefix the sourceRef with partner code for better traceability
-		// e.g. "RAZORPAY-TXN-8829" → "FINTECH-RAZORPAY-RAZORPAY-TXN-8829"
-		String fullSourceRef = (partnerCode != null) ? "FINTECH-" + partnerCode + "-" + sourceRef
-				: "FINTECH-" + sourceRef;
+        BigDecimal amount       = new BigDecimal(amountStr);
+        LocalDate valueDate     = LocalDate.parse(valueDateStr);
+        TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
 
-		String normalizedPayload = buildNormalizedPayload(fullSourceRef, partnerCode, txnType, amount, currency,
-				valueDate);
+        String fullSourceRef = (partnerCode != null)
+            ? "FINTECH-" + partnerCode + "-" + sourceRef
+            : "FINTECH-" + sourceRef;
 
-		IncomingTransaction txn = new IncomingTransaction(fintechSourceSystem, fullSourceRef, rawPayload, txnType,
-				amount, currency, valueDate, normalizedPayload);
+        String normalizedPayload = buildNormalizedPayload(
+            fullSourceRef, partnerCode, txnType, amount, currency, valueDate,
+            debitAccountNum, creditAccountNum
+        );
 
-		// Fintech transactions need extra validation — mark as RECEIVED not VALIDATED
-		// (The settlement engine will validate them before processing)
-		txn.setProcessingStatus(ProcessingStatus.RECEIVED);
-		txn.setCreatedBy("FINTECH_ADAPTER");
+        IncomingTransaction txn = new IncomingTransaction(
+            fintechSourceSystem, fullSourceRef, rawPayload,
+            txnType, amount, currency, valueDate, normalizedPayload
+        );
 
-		return txn;
-	}
+        txn.setDebitAccountNumber(debitAccountNum);
+        txn.setCreditAccountNumber(creditAccountNum);
+        // Fintech transactions start as RECEIVED — need extra validation by settlement engine
+        txn.setProcessingStatus(ProcessingStatus.RECEIVED);
+        txn.setCreatedBy("FINTECH_ADAPTER");
 
-	@Override
-	public SourceType getSourceType() {
-		return SourceType.FINTECH;
-	}
+        return txn;
+    }
 
-	// -----------------------------------------------------------------------
-	// Private helpers
-	// -----------------------------------------------------------------------
+    @Override
+    public SourceType getSourceType() {
+        return SourceType.FINTECH;
+    }
 
-	/**
-	 * Extracts a value from a simple flat JSON string by field name. Same logic as
-	 * RtgsAdapter — handles quoted string values and bare numbers.
-	 */
-	private String extractJsonField(String json, String fieldName) {
-		String searchKey = "\"" + fieldName + "\":";
-		int keyIndex = json.indexOf(searchKey);
-		if (keyIndex == -1) {
-			return null;
-		}
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
 
-		int valueStart = keyIndex + searchKey.length();
+    private String extractJsonField(String json, String fieldName) {
+        String searchKey = "\"" + fieldName + "\":";
+        int keyIndex = json.indexOf(searchKey);
+        if (keyIndex == -1) return null;
 
-		// Skip any whitespace after colon
-		while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
-			valueStart++;
-		}
+        int valueStart = keyIndex + searchKey.length();
 
-		boolean isQuoted = (valueStart < json.length() && json.charAt(valueStart) == '"');
+        while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
+            valueStart++;
+        }
 
-		if (isQuoted) {
-			int openQuote = valueStart;
-			int closeQuote = json.indexOf('"', openQuote + 1);
-			if (closeQuote == -1)
-				return null;
-			return json.substring(openQuote + 1, closeQuote);
-		} else {
-			int endIndex = json.indexOf(',', valueStart);
-			if (endIndex == -1)
-				endIndex = json.indexOf('}', valueStart);
-			if (endIndex == -1)
-				endIndex = json.length();
-			return json.substring(valueStart, endIndex).trim();
-		}
-	}
+        boolean isQuoted = (valueStart < json.length() && json.charAt(valueStart) == '"');
 
-	private String buildNormalizedPayload(String sourceRef, String partnerCode, TransactionType txnType,
-			BigDecimal amount, String currency, LocalDate valueDate) {
-		return "{" + "\"source\":\"FINTECH\"," + "\"partnerCode\":\"" + (partnerCode != null ? partnerCode : "UNKNOWN")
-				+ "\"," + "\"sourceRef\":\"" + sourceRef + "\"," + "\"txnType\":\"" + txnType.name() + "\","
-				+ "\"amount\":" + amount + "," + "\"currency\":\"" + currency + "\"," + "\"valueDate\":\"" + valueDate
-				+ "\"" + "}";
-	}
+        if (isQuoted) {
+            int openQuote  = valueStart;
+            int closeQuote = json.indexOf('"', openQuote + 1);
+            if (closeQuote == -1) return null;
+            return json.substring(openQuote + 1, closeQuote);
+        } else {
+            int endIndex = json.indexOf(',', valueStart);
+            if (endIndex == -1) endIndex = json.indexOf('}', valueStart);
+            if (endIndex == -1) endIndex = json.length();
+            return json.substring(valueStart, endIndex).trim();
+        }
+    }
+
+    private String buildNormalizedPayload(String sourceRef, String partnerCode,
+                                           TransactionType txnType, BigDecimal amount,
+                                           String currency, LocalDate valueDate,
+                                           String debitAcc, String creditAcc) {
+        return "{" +
+               "\"source\":\"FINTECH\"," +
+               "\"partnerCode\":\"" + (partnerCode != null ? partnerCode : "UNKNOWN") + "\"," +
+               "\"sourceRef\":\"" + sourceRef + "\"," +
+               "\"txnType\":\"" + txnType.name() + "\"," +
+               "\"amount\":" + amount + "," +
+               "\"currency\":\"" + currency + "\"," +
+               "\"valueDate\":\"" + valueDate + "\"," +
+               "\"debitAccount\":\"" + debitAcc + "\"," +
+               "\"creditAccount\":\"" + creditAcc + "\"" +
+               "}";
+    }
 }
