@@ -2,10 +2,11 @@ package com.iispl.banksettlement.registry;
 
 import com.iispl.banksettlement.adapter.CbsAdapter;
 import com.iispl.banksettlement.adapter.FintechAdapter;
-import com.iispl.banksettlement.adapter.NeftUpiAdapter;
+import com.iispl.banksettlement.adapter.NeftAdapter;
 import com.iispl.banksettlement.adapter.RtgsAdapter;
 import com.iispl.banksettlement.adapter.SwiftAdapter;
 import com.iispl.banksettlement.adapter.TransactionAdapter;
+import com.iispl.banksettlement.adapter.UpiAdapter;
 import com.iispl.banksettlement.enums.SourceType;
 
 import java.util.HashMap;
@@ -24,10 +25,19 @@ import java.util.Map;
  *   - Registry: central store of available adapters
  *   - Strategy: the selected adapter defines how to parse the raw payload
  *
+ * CHANGE FROM PREVIOUS VERSION:
+ *   Previously NeftUpiAdapter was one class handling both NEFT and UPI with
+ *   a shared CSV format. That was a placeholder format.
+ *
+ *   Now NEFT and UPI are two completely separate adapter classes:
+ *     - NeftAdapter  → handles SourceType.NEFT — fixed-width batch file format
+ *     - UpiAdapter   → handles SourceType.UPI  — JSON REST webhook format
+ *   Each is registered independently in this registry.
+ *
  * HOW TO ADD A NEW SOURCE SYSTEM IN THE FUTURE:
  *   1. Write a new adapter class implementing TransactionAdapter
  *   2. Register it here with one line: registerAdapter(new YourNewAdapter())
- *   No other code changes needed.
+ *   No other code changes needed anywhere.
  *
  * TEAMMATE USAGE (T4 — Threading):
  *   AdapterRegistry registry = new AdapterRegistry();
@@ -47,23 +57,27 @@ public class AdapterRegistry {
     // -----------------------------------------------------------------------
 
     /**
-     * Creates the registry and auto-registers all 5 source system adapters.
-     * Called once during application startup.
+     * Creates the registry and auto-registers all 6 source system adapters.
+     * Called once during application startup (inside IngestionPipeline constructor).
+     *
+     * Adapters registered:
+     *   CBS     → CbsAdapter     (pipe-delimited flat file, 10 fields)
+     *   RTGS    → RtgsAdapter    (XML over MQ, 14 fields)
+     *   SWIFT   → SwiftAdapter   (MT103 message, 14 fields)
+     *   NEFT    → NeftAdapter    (fixed-width batch file, 10 fields)
+     *   UPI     → UpiAdapter     (JSON REST webhook, 14 fields, no account validation)
+     *   FINTECH → FintechAdapter (proprietary JSON, 18 fields including nested)
      */
     public AdapterRegistry() {
         adapterMap = new HashMap<>();
 
-        // Register all adapters
-        // Order does not matter — Map lookup is by SourceType key
+        // Register all 6 adapters — each handles its own source system
         registerAdapter(new CbsAdapter());
         registerAdapter(new RtgsAdapter());
         registerAdapter(new SwiftAdapter());
-        registerAdapter(new NeftUpiAdapter());  // handles both NEFT and UPI
+        registerAdapter(new NeftAdapter());   // NEFT — fixed-width format (separate from UPI)
+        registerAdapter(new UpiAdapter());    // UPI  — JSON webhook format (separate from NEFT)
         registerAdapter(new FintechAdapter());
-
-        // NeftUpiAdapter handles NEFT — manually add UPI mapping to same adapter
-        // because one adapter handles both NEFT and UPI (same CSV format)
-        adapterMap.put(SourceType.UPI, adapterMap.get(SourceType.NEFT));
 
         System.out.println("AdapterRegistry: Registered adapters for: " + adapterMap.keySet());
     }
@@ -74,9 +88,9 @@ public class AdapterRegistry {
 
     /**
      * Registers an adapter in the registry.
-     * Uses the adapter's own getSourceType() as the key.
+     * Uses the adapter's own getSourceType() as the map key.
      *
-     * @param adapter The TransactionAdapter to register
+     * @param adapter The TransactionAdapter to register (must not be null)
      */
     public void registerAdapter(TransactionAdapter adapter) {
         if (adapter == null) {
@@ -91,7 +105,7 @@ public class AdapterRegistry {
      * Retrieves the correct TransactionAdapter for a given SourceType.
      *
      * @param sourceType The source system type (CBS, RTGS, SWIFT, NEFT, UPI, FINTECH)
-     * @return The matching TransactionAdapter
+     * @return           The matching TransactionAdapter
      * @throws IllegalArgumentException if no adapter is registered for the given SourceType
      */
     public TransactionAdapter getAdapter(SourceType sourceType) {

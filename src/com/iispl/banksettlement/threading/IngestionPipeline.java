@@ -101,19 +101,30 @@ public class IngestionPipeline {
     public void shutdown() {
 
         System.out.println("[IngestionPipeline] Shutting down...");
+
+        // Step 1: Stop accepting new tasks — already running tasks continue
         executor.shutdown();
 
         try {
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+            // Step 2: Wait up to 60 seconds for ALL threads to finish their DB work.
+            // CRITICAL: ConnectionPool.shutdown() must only run AFTER all threads done.
+            // If we close the pool while a thread is still doing a DB call, it crashes.
+            boolean finished = executor.awaitTermination(60, TimeUnit.SECONDS);
+
+            if (!finished) {
+                System.out.println("[IngestionPipeline] Timeout — forcing remaining threads to stop.");
                 executor.shutdownNow();
-                System.out.println("[IngestionPipeline] Forced shutdown.");
-            } else {
-                System.out.println("[IngestionPipeline] Clean shutdown done.");
+                executor.awaitTermination(10, TimeUnit.SECONDS);
             }
+
+            System.out.println("[IngestionPipeline] Clean shutdown done.");
+
         } catch (InterruptedException e) {
             executor.shutdownNow();
             Thread.currentThread().interrupt();
+
         } finally {
+            // Step 3: Only NOW — after ALL worker threads are stopped — close the pool.
             ConnectionPool.shutdown();
             System.out.println("[IngestionPipeline] ConnectionPool closed.");
         }
