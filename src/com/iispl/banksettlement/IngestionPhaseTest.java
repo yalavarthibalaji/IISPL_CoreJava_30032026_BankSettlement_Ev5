@@ -34,37 +34,41 @@ public class IngestionPhaseTest {
         // Feed one transaction from each source system
         // -------------------------------------------------------
 
-        // CBS — pipe-delimited
+        // CBS — pipe-delimited (7 fields: sourceRef|txnType|amount|currency|valueDate|debitAccount|creditAccount)
         pipeline.ingest(SourceType.CBS,
             "CBS-REF-" + System.currentTimeMillis()
-            + "|CREDIT|50000.00|INR|2024-06-15");
+            + "|CREDIT|50000.00|INR|2024-06-15|ACC001|ACC002");
 
-        // RTGS — JSON
+        // RTGS — JSON (must include debitAccount and creditAccount, amount >= 200000)
         pipeline.ingest(SourceType.RTGS,
             "{\"rtgsRef\":\"RTGS-" + System.currentTimeMillis()
             + "\",\"txnType\":\"CREDIT\","
             + "\"amount\":\"500000.00\","
             + "\"currency\":\"INR\","
-            + "\"valueDate\":\"2024-06-15\"}");
+            + "\"valueDate\":\"2024-06-15\","
+            + "\"debitAccount\":\"ACC001\","
+            + "\"creditAccount\":\"ACC002\"}");
 
-        // SWIFT — MT103 style
+        // SWIFT — MT103 style (must include :50K: debitAccount and :59: creditAccount)
         pipeline.ingest(SourceType.SWIFT,
             ":20:SWIFT-" + System.currentTimeMillis()
-            + ":32A:240615USD75000.00:23B:CRED");
+            + ":32A:240615USD75000.00:23B:CRED:50K:ACC001:59:ACC002");
 
-        // NEFT — CSV
+        // NEFT — CSV (8 fields: source,sourceRef,txnType,amount,currency,valueDate,debitAccount,creditAccount)
         pipeline.ingest(SourceType.NEFT,
             "NEFT,NEFT-" + System.currentTimeMillis()
-            + ",CREDIT,25000.00,INR,2024-06-15");
+            + ",CREDIT,25000.00,INR,2024-06-15,ACC001,ACC002");
 
-        // Fintech — JSON
+        // Fintech — JSON (must include debitAccount and creditAccount)
         pipeline.ingest(SourceType.FINTECH,
             "{\"partnerRef\":\"TXN-" + System.currentTimeMillis()
             + "\",\"type\":\"CREDIT\","
             + "\"value\":\"12500.75\","
             + "\"ccy\":\"INR\","
             + "\"settlDate\":\"2024-06-15\","
-            + "\"partnerCode\":\"RAZORPAY\"}");
+            + "\"partnerCode\":\"RAZORPAY\","
+            + "\"debitAccount\":\"ACC001\","
+            + "\"creditAccount\":\"ACC002\"}");
 
         // Wait 5 seconds for all threads to finish
         System.out.println("\n[Test] Waiting for all workers to complete...");
