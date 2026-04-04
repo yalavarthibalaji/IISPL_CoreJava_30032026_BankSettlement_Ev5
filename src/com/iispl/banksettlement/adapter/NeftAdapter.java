@@ -13,41 +13,52 @@ import java.time.LocalDate;
 /**
  * NeftAdapter — Adapter for NEFT (National Electronic Funds Transfer) transactions.
  *
- * NEFT sends batch files with multiple records in fixed-width text format.
- * Each record is exactly 132 characters wide.
+ * NEFT sends batch files in fixed-width text format.
+ * Each record is now 172 characters wide (was 132 in v2).
  *
- * RAW PAYLOAD FORMAT (Fixed-Width — 10 fields):
- * ──────────────────────────────────────────────────────────────
- *  Field          Position   Length   Example Value
- * ──────────────────────────────────────────────────────────────
- *  RECORD_TYPE    01-02      2        CR           ← CR=CREDIT, DR=DEBIT
- *  NEFT_REF       03-18      16       NEFT260402001← sourceRef; date at pos 5-10
- *  SENDER_IFSC    19-29      11       ICIC0002345  ← extra field
- *  SENDER_ACCT    30-49      20       CA00123456789012  ← debitAccount (normalizedPayload)
- *  BENE_IFSC      50-60      11       SBIN0001234  ← extra field
- *  BENE_ACCT      61-80      20       SB00987654321098  ← creditAccount (normalizedPayload)
- *  BENE_NAME      81-110     30       RAMESH KUMAR ← extra field
- *  AMT            111-122    12       000010000.00
- *  PURPOSE_CODE   123-126    4        OTHR         ← extra field
- *  BATCH_NO       127-132    6        B00012       ← extra field
- * ──────────────────────────────────────────────────────────────
+ * RAW PAYLOAD FORMAT (Fixed-Width — 12 fields, v3 adds FROM_BANK, TO_BANK):
+ * ──────────────────────────────────────────────────────────────────────────
+ *  Field          Position    Length   Example Value
+ * ──────────────────────────────────────────────────────────────────────────
+ *  RECORD_TYPE    001-002     2        CR           ← CR=CREDIT, DR=DEBIT
+ *  NEFT_REF       003-018     16       NEFT260402001   ← sourceRef; date at 5-10
+ *  SENDER_IFSC    019-029     11       ICIC0002345
+ *  SENDER_ACCT    030-049     20       NEFT-ACC-DR-001 ← debitAccount
+ *  BENE_IFSC      050-060     11       SBIN0001234
+ *  BENE_ACCT      061-080     20       NEFT-ACC-CR-001 ← creditAccount
+ *  BENE_NAME      081-110     30       RAMESH KUMAR
+ *  AMT            111-122     12       000010000.00
+ *  PURPOSE_CODE   123-126     4        OTHR
+ *  BATCH_NO       127-132     6        B00012
+ *  FROM_BANK      133-152     20       ICICI Bank      ← NEW (v3) — fromBank
+ *  TO_BANK        153-172     20       SBI Bank        ← NEW (v3) — toBank
+ * ──────────────────────────────────────────────────────────────────────────
+ *
+ * NOTE: Positions above are 1-based. Java substring() uses 0-based:
+ *   Position 133-152 (1-based) → substring(132, 152) (0-based)
+ *   Position 153-172 (1-based) → substring(152, 172) (0-based)
  *
  * DATE EXTRACTION FROM NEFT_REF:
- *   NEFT_REF format: "NEFT" + yyMMdd + sequence (e.g. "NEFT260402001")
- *   Date portion is at index 4-9 = "260402" (yyMMdd)
+ *   "NEFT260402001" → index 4-9 = "260402" (yyMMdd) → 2026-04-02
  *
- * CHANGE LOG (v2):
- *   - currency removed as IncomingTransaction field (NEFT is always INR).
- *     Still hardcoded as "INR" inside normalizedPayload for audit.
- *   - debitAccountNumber / creditAccountNumber setters removed.
- *     SENDER_ACCT and BENE_ACCT now live ONLY in normalizedPayload
- *     as "debitAccount" and "creditAccount".
- *   - requiresAccountValidation removed — validation at settlement phase.
- *   - IncomingTransaction constructor no longer takes currency parameter.
+ * CHANGE LOG (v3 — fromBank / toBank):
+ *   - Record length extended from 132 → 172 chars.
+ *   - FROM_BANK at substring(132, 152) — 20 chars, space-padded.
+ *   - TO_BANK   at substring(152, 172) — 20 chars, space-padded.
+ *   - Both are trimmed and stored in txn.fromBank / txn.toBank and normalizedPayload.
+ *   - neft_transactions.txt updated with FROM_BANK and TO_BANK appended.
+ *   - TxtFileReader minimum length check updated to 172.
  */
 public class NeftAdapter implements TransactionAdapter {
 
+    // Updated minimum length — original 132 + 20 (FROM_BANK) + 20 (TO_BANK) = 172
+    private static final int NEFT_RECORD_MIN_LENGTH = 172;
+
     private final SourceSystem neftSourceSystem;
+
+    // -----------------------------------------------------------------------
+    // Constructor
+    // -----------------------------------------------------------------------
 
     public NeftAdapter() {
         this.neftSourceSystem = new SourceSystem(
@@ -61,6 +72,10 @@ public class NeftAdapter implements TransactionAdapter {
         this.neftSourceSystem.setCreatedBy("SYSTEM");
     }
 
+    // -----------------------------------------------------------------------
+    // TransactionAdapter implementation
+    // -----------------------------------------------------------------------
+
     @Override
     public IncomingTransaction adapt(String rawPayload) {
 
@@ -71,38 +86,59 @@ public class NeftAdapter implements TransactionAdapter {
         }
 
         if (rawPayload.trim().startsWith("#")) {
-            throw new IllegalArgumentException(
-                "NeftAdapter: Skipping comment line"
-            );
+            throw new IllegalArgumentException("NeftAdapter: Skipping comment line");
         }
 
-        if (rawPayload.length() < 132) {
+        if (rawPayload.length() < NEFT_RECORD_MIN_LENGTH) {
             throw new IllegalArgumentException(
-                "NeftAdapter: NEFT fixed-width record must be at least 132 characters. " +
+                "NeftAdapter: NEFT record must be at least " + NEFT_RECORD_MIN_LENGTH +
+                " characters (includes FROM_BANK and TO_BANK fields). " +
                 "Got length: " + rawPayload.length() + " | Record: " + rawPayload
             );
         }
 
-        // Fixed-width field extraction (0-based Java substring indices)
-        String recordType  = rawPayload.substring(0, 2).trim();
-        String neftRef     = rawPayload.substring(2, 18).trim();
-        String senderIFSC  = rawPayload.substring(18, 29).trim();
-        String senderAcct  = rawPayload.substring(29, 49).trim();
-        String beneIFSC    = rawPayload.substring(49, 60).trim();
-        String beneAcct    = rawPayload.substring(60, 80).trim();
-        String beneName    = rawPayload.substring(80, 110).trim();
-        String amtStr      = rawPayload.substring(110, 122).trim();
-        String purposeCode = rawPayload.substring(122, 126).trim();
-        String batchNo     = rawPayload.substring(126, 132).trim();
+        // ---- Extract all fields using fixed-width positions (0-based) ----
 
+        // Original fields (0-131) — unchanged from v2
+        String recordType  = rawPayload.substring(0, 2).trim();    // CR or DR
+        String neftRef     = rawPayload.substring(2, 18).trim();   // e.g. NEFT260402001
+        String senderIFSC  = rawPayload.substring(18, 29).trim();  // e.g. ICIC0002345
+        String senderAcct  = rawPayload.substring(29, 49).trim();  // debit account
+        String beneIFSC    = rawPayload.substring(49, 60).trim();  // e.g. SBIN0001234
+        String beneAcct    = rawPayload.substring(60, 80).trim();  // credit account
+        String beneName    = rawPayload.substring(80, 110).trim(); // beneficiary name
+        String amtStr      = rawPayload.substring(110, 122).trim();// e.g. 000010000.00
+        String purposeCode = rawPayload.substring(122, 126).trim();// e.g. OTHR
+        String batchNo     = rawPayload.substring(126, 132).trim();// e.g. B00012
+
+        // NEW fields (132-171) — added in v3
+        String fromBank    = rawPayload.substring(132, 152).trim();// e.g. ICICI Bank
+        String toBank      = rawPayload.substring(152, 172).trim();// e.g. SBI Bank
+
+        // ---- Validate required fields ----
         if (recordType.isEmpty() || neftRef.isEmpty() || senderAcct.isEmpty()
                 || beneAcct.isEmpty() || amtStr.isEmpty()) {
             throw new IllegalArgumentException(
-                "NeftAdapter: Missing required fields in NEFT record. " +
+                "NeftAdapter: Missing required fields. " +
                 "RECORD_TYPE, NEFT_REF, SENDER_ACCT, BENE_ACCT, AMT must not be blank."
             );
         }
 
+        if (fromBank.isEmpty()) {
+            throw new IllegalArgumentException(
+                "NeftAdapter: FROM_BANK (positions 133-152) is blank. " +
+                "All NEFT records must include FROM_BANK and TO_BANK."
+            );
+        }
+
+        if (toBank.isEmpty()) {
+            throw new IllegalArgumentException(
+                "NeftAdapter: TO_BANK (positions 153-172) is blank. " +
+                "All NEFT records must include FROM_BANK and TO_BANK."
+            );
+        }
+
+        // ---- Map RECORD_TYPE → TransactionType ----
         TransactionType txnType;
         switch (recordType.toUpperCase()) {
             case "CR":
@@ -119,22 +155,28 @@ public class NeftAdapter implements TransactionAdapter {
 
         BigDecimal amount = new BigDecimal(amtStr);
 
-        // NEFT is always INR — stored in normalizedPayload for audit, not as a field
+        // NEFT is always INR — stored in normalizedPayload for audit
         String currency = "INR";
 
+        // Extract valueDate from NEFT_REF (index 4-9 = yyMMdd)
         LocalDate valueDate = extractValueDateFromNeftRef(neftRef);
 
+        // ---- Build normalizedPayload — includes fromBank and toBank ----
         String normalizedPayload = buildNormalizedPayload(
             neftRef, txnType, amount, currency, valueDate,
             senderAcct, beneAcct,
-            senderIFSC, beneIFSC, beneName, purposeCode, batchNo
+            senderIFSC, beneIFSC, beneName, purposeCode, batchNo,
+            fromBank, toBank
         );
 
+        // ---- Build IncomingTransaction ----
         IncomingTransaction txn = new IncomingTransaction(
             neftSourceSystem, neftRef, rawPayload,
             txnType, amount, valueDate, normalizedPayload
         );
 
+        txn.setFromBank(fromBank);
+        txn.setToBank(toBank);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("NEFT_ADAPTER");
 
@@ -146,18 +188,21 @@ public class NeftAdapter implements TransactionAdapter {
         return SourceType.NEFT;
     }
 
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
     /**
-     * Extracts value date from NEFT_REF.
-     * Format: "NEFT" + yyMMdd + sequence → index 4-9 = "260402" → 2026-04-02
+     * Extracts valueDate from NEFT_REF.
+     * "NEFT260402001" → index 4-9 = "260402" (yyMMdd) → 2026-04-02
      */
     private LocalDate extractValueDateFromNeftRef(String neftRef) {
         if (neftRef.length() < 10) {
             throw new IllegalArgumentException(
-                "NeftAdapter: NEFT_REF too short to extract date. " +
-                "Expected at least 10 chars (NEFT + yyMMdd + ...). Got: " + neftRef
+                "NeftAdapter: NEFT_REF too short. Expected at least 10 chars. Got: " + neftRef
             );
         }
-        String yymmdd = neftRef.substring(4, 10);
+        String yymmdd = neftRef.substring(4, 10); // e.g. "260402"
         int year  = 2000 + Integer.parseInt(yymmdd.substring(0, 2));
         int month = Integer.parseInt(yymmdd.substring(2, 4));
         int day   = Integer.parseInt(yymmdd.substring(4, 6));
@@ -170,7 +215,8 @@ public class NeftAdapter implements TransactionAdapter {
                                           String debitAcc, String creditAcc,
                                           String senderIFSC, String beneIFSC,
                                           String beneName, String purposeCode,
-                                          String batchNo) {
+                                          String batchNo,
+                                          String fromBank, String toBank) {
         return "{"
             + "\"source\":\"NEFT\","
             + "\"sourceRef\":\"" + sourceRef + "\","
@@ -180,6 +226,8 @@ public class NeftAdapter implements TransactionAdapter {
             + "\"valueDate\":\"" + valueDate + "\","
             + "\"debitAccount\":\"" + debitAcc + "\","
             + "\"creditAccount\":\"" + creditAcc + "\","
+            + "\"fromBank\":\"" + fromBank + "\","
+            + "\"toBank\":\"" + toBank + "\","
             + "\"senderIFSC\":\"" + nullSafe(senderIFSC) + "\","
             + "\"beneIFSC\":\"" + nullSafe(beneIFSC) + "\","
             + "\"beneName\":\"" + nullSafe(beneName) + "\","

@@ -2,6 +2,8 @@
 <!-- RTGS Transaction File — XML over MQ format -->
 <!-- Each RTGSMessage element is one transaction -->
 <!-- Minimum amount: Rs. 2,00,000 for INR -->
+<!-- SenderBank = bank that owns SenderAcct (fromBank) -->
+<!-- ReceiverBank = bank that owns ReceiverAcct (toBank) -->
 <RTGSBatch>
 
     <RTGSMessage>
@@ -19,6 +21,8 @@
         <Purpose>TRADE_SETTLEMENT</Purpose>
         <SubmittedAt>2026-04-02T10:30:00</SubmittedAt>
         <BatchWindow>W1</BatchWindow>
+        <SenderBank>SBI Bank</SenderBank>
+        <ReceiverBank>HDFC Bank</ReceiverBank>
     </RTGSMessage>
 
     <RTGSMessage>
@@ -36,6 +40,8 @@
         <Purpose>PROPERTY_PURCHASE</Purpose>
         <SubmittedAt>2026-04-02T11:15:00</SubmittedAt>
         <BatchWindow>W1</BatchWindow>
+        <SenderBank>ICICI Bank</SenderBank>
+        <ReceiverBank>Axis Bank</ReceiverBank>
     </RTGSMessage>
 
     <RTGSMessage>
@@ -53,6 +59,8 @@
         <Purpose>GOVT_SECURITIES</Purpose>
         <SubmittedAt>2026-04-03T09:00:00</SubmittedAt>
         <BatchWindow>W2</BatchWindow>
+        <SenderBank>HDFC Bank</SenderBank>
+        <ReceiverBank>SBI Bank</ReceiverBank>
     </RTGSMessage>
 
 </RTGSBatch>

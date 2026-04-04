@@ -17,40 +17,39 @@ import java.time.format.DateTimeFormatter;
  *
  * UPI sends real-time payment notifications as JSON via REST webhooks.
  *
- * RAW PAYLOAD FORMAT (JSON — 14 fields):
- * ───────────────────────────────────────────────────────────────────
+ * RAW PAYLOAD FORMAT (JSON — 16 fields, v3 adds payerBank and payeeBank):
+ * ──────────────────────────────────────────────────────────────────────────
  *  JSON Key        Example Value             Notes
- * ───────────────────────────────────────────────────────────────────
+ * ──────────────────────────────────────────────────────────────────────────
  *  upiTxnId        UPI20260402XYZ9988        ← sourceRef
- *  payerVpa        ramesh@okicici            ← debitAccount in normalizedPayload
- *  payeeVpa        merchant@ybl              ← creditAccount in normalizedPayload
- *  payerName       Ramesh Kumar              ← extra field
- *  payeeName       SuperMart Pvt Ltd         ← extra field
+ *  payerVpa        ramesh@okicici            ← debitAccount
+ *  payeeVpa        merchant@ybl              ← creditAccount
+ *  payerName       Ramesh Kumar
+ *  payeeName       SuperMart Pvt Ltd
  *  amount          4999.00
  *  currency        INR
- *  txnTimestamp    2026-04-02T11:45:22       ← used as valueDate (date part only)
- *  remarks         Groceries April           ← extra field
- *  pspCode         ICICI                     ← extra field
- *  deviceId        ANDR-UUID-88821           ← extra field
- *  mcc             5411                      ← extra field (Merchant Category Code)
- *  status          SUCCESS                   ← extra field
- *  rrn             RRN20260402001            ← extra field (Retrieval Reference Number)
- * ───────────────────────────────────────────────────────────────────
+ *  txnTimestamp    2026-04-02T11:45:22       ← valueDate (date part only)
+ *  remarks         Groceries April
+ *  pspCode         ICICI
+ *  deviceId        ANDR-UUID-88821
+ *  mcc             5411
+ *  status          SUCCESS
+ *  rrn             RRN20260402001
+ *  payerBank       ICICI Bank                ← NEW (v3) — fromBank
+ *  payeeBank       Yes Bank                  ← NEW (v3) — toBank
+ * ──────────────────────────────────────────────────────────────────────────
  *
- * IMPORTANT — VPA ADDRESSES vs ACCOUNT NUMBERS:
- *   UPI uses Virtual Payment Addresses (payerVpa, payeeVpa) like "ramesh@okicici"
- *   instead of bank account numbers. These VPAs are stored as "debitAccount" and
- *   "creditAccount" inside normalizedPayload. The settlement engine will interpret
- *   the "accountValidationSkipped":true flag and handle VPA resolution separately.
+ * CHANGE LOG (v3 — fromBank / toBank):
+ *   - payerBank and payeeBank added as explicit JSON fields in the payload.
+ *   - Parsed using existing extractJsonField() helper (pure Core Java, no library).
+ *   - Stored as txn.fromBank / txn.toBank AND inside normalizedPayload JSON.
+ *   - upi_transactions.json updated with payerBank and payeeBank fields.
  *
- * CHANGE LOG (v2):
- *   - currency removed from IncomingTransaction field (INR-only system).
- *   - payerVpa / payeeVpa no longer set as debitAccountNumber / creditAccountNumber
- *     (those fields removed). They now live ONLY in normalizedPayload.
- *   - requiresAccountValidation removed from IncomingTransaction.
- *     The "accountValidationSkipped":true flag in normalizedPayload signals to
- *     the settlement engine that these are VPA addresses, not real account numbers.
- *   - IncomingTransaction constructor no longer takes currency parameter.
+ * NOTE ON VPA ADDRESSES:
+ *   UPI still uses VPA addresses (payerVpa, payeeVpa) instead of real account
+ *   numbers. These are stored as debitAccount / creditAccount in normalizedPayload.
+ *   The "accountValidationSkipped":true flag signals the settlement engine to
+ *   handle VPA resolution rather than direct DB account lookup.
  */
 public class UpiAdapter implements TransactionAdapter {
 
@@ -58,6 +57,10 @@ public class UpiAdapter implements TransactionAdapter {
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     private final SourceSystem upiSourceSystem;
+
+    // -----------------------------------------------------------------------
+    // Constructor
+    // -----------------------------------------------------------------------
 
     public UpiAdapter() {
         this.upiSourceSystem = new SourceSystem(
@@ -70,6 +73,10 @@ public class UpiAdapter implements TransactionAdapter {
         this.upiSourceSystem.setSourceSystemId(5L);
         this.upiSourceSystem.setCreatedBy("SYSTEM");
     }
+
+    // -----------------------------------------------------------------------
+    // TransactionAdapter implementation
+    // -----------------------------------------------------------------------
 
     @Override
     public IncomingTransaction adapt(String rawPayload) {
@@ -84,12 +91,17 @@ public class UpiAdapter implements TransactionAdapter {
             throw new IllegalArgumentException("UpiAdapter: Skipping comment line");
         }
 
+        // ---- Extract canonical fields ----
         String sourceRef    = extractJsonField(rawPayload, "upiTxnId");
         String payerVpa     = extractJsonField(rawPayload, "payerVpa");
         String payeeVpa     = extractJsonField(rawPayload, "payeeVpa");
         String amountStr    = extractJsonField(rawPayload, "amount");
         String currency     = extractJsonField(rawPayload, "currency");
         String txnTimestamp = extractJsonField(rawPayload, "txnTimestamp");
+
+        // ---- Extract fromBank / toBank ---- (NEW v3)
+        String payerBank    = extractJsonField(rawPayload, "payerBank");
+        String payeeBank    = extractJsonField(rawPayload, "payeeBank");
 
         if (sourceRef == null || payerVpa == null || payeeVpa == null
                 || amountStr == null || currency == null || txnTimestamp == null) {
@@ -100,6 +112,23 @@ public class UpiAdapter implements TransactionAdapter {
             );
         }
 
+        if (payerBank == null || payerBank.isEmpty()) {
+            throw new IllegalArgumentException(
+                "UpiAdapter: Missing 'payerBank' field. " +
+                "All UPI payloads must include payerBank and payeeBank. " +
+                "Got: " + rawPayload
+            );
+        }
+
+        if (payeeBank == null || payeeBank.isEmpty()) {
+            throw new IllegalArgumentException(
+                "UpiAdapter: Missing 'payeeBank' field. " +
+                "All UPI payloads must include payerBank and payeeBank. " +
+                "Got: " + rawPayload
+            );
+        }
+
+        // ---- Extract extra fields ----
         String payerName = extractJsonField(rawPayload, "payerName");
         String payeeName = extractJsonField(rawPayload, "payeeName");
         String remarks   = extractJsonField(rawPayload, "remarks");
@@ -109,25 +138,28 @@ public class UpiAdapter implements TransactionAdapter {
         String status    = extractJsonField(rawPayload, "status");
         String rrn       = extractJsonField(rawPayload, "rrn");
 
-        BigDecimal amount = new BigDecimal(amountStr);
+        // ---- Type conversions ----
+        BigDecimal amount   = new BigDecimal(amountStr);
         LocalDate valueDate = LocalDateTime.parse(txnTimestamp, UPI_TIMESTAMP_FORMAT).toLocalDate();
-        TransactionType txnType = TransactionType.CREDIT;
+        TransactionType txnType = TransactionType.CREDIT; // UPI is always CREDIT
 
-        // VPA addresses stored as debitAccount / creditAccount in normalizedPayload.
-        // The settlement engine reads "accountValidationSkipped":true and handles
-        // VPA resolution instead of direct account DB lookup.
+        // ---- Build normalizedPayload — includes fromBank and toBank ----
         String normalizedPayload = buildNormalizedPayload(
             sourceRef, txnType, amount, currency, valueDate,
             payerVpa, payeeVpa,
             payerName, payeeName, remarks,
-            pspCode, deviceId, mcc, status, rrn
+            pspCode, deviceId, mcc, status, rrn,
+            payerBank, payeeBank
         );
 
+        // ---- Build IncomingTransaction ----
         IncomingTransaction txn = new IncomingTransaction(
             upiSourceSystem, sourceRef, rawPayload,
             txnType, amount, valueDate, normalizedPayload
         );
 
+        txn.setFromBank(payerBank);
+        txn.setToBank(payeeBank);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("UPI_ADAPTER");
 
@@ -139,15 +171,29 @@ public class UpiAdapter implements TransactionAdapter {
         return SourceType.UPI;
     }
 
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /**
+     * Extracts a value from a JSON string by field name.
+     * Pure Core Java — no external JSON library needed.
+     * Example: extractJsonField("{\"amount\":\"4999.00\"}", "amount") → "4999.00"
+     */
     private String extractJsonField(String json, String fieldName) {
         String searchKey = "\"" + fieldName + "\":";
         int keyIndex = json.indexOf(searchKey);
         if (keyIndex == -1) return null;
+
         int valueStart = keyIndex + searchKey.length();
+
+        // Skip whitespace after colon
         while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
             valueStart++;
         }
+
         boolean isQuoted = (valueStart < json.length() && json.charAt(valueStart) == '"');
+
         if (isQuoted) {
             int openQuote  = valueStart;
             int closeQuote = json.indexOf('"', openQuote + 1);
@@ -168,7 +214,8 @@ public class UpiAdapter implements TransactionAdapter {
                                           String payerName, String payeeName,
                                           String remarks, String pspCode,
                                           String deviceId, String mcc,
-                                          String status, String rrn) {
+                                          String status, String rrn,
+                                          String fromBank, String toBank) {
         return "{"
             + "\"source\":\"UPI\","
             + "\"sourceRef\":\"" + sourceRef + "\","
@@ -178,6 +225,8 @@ public class UpiAdapter implements TransactionAdapter {
             + "\"valueDate\":\"" + valueDate + "\","
             + "\"debitAccount\":\"" + payerVpa + "\","
             + "\"creditAccount\":\"" + payeeVpa + "\","
+            + "\"fromBank\":\"" + fromBank + "\","
+            + "\"toBank\":\"" + toBank + "\","
             + "\"payerName\":\"" + nullSafe(payerName) + "\","
             + "\"payeeName\":\"" + nullSafe(payeeName) + "\","
             + "\"remarks\":\"" + nullSafe(remarks) + "\","

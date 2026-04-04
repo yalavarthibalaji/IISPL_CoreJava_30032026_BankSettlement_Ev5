@@ -16,35 +16,34 @@ import java.time.format.DateTimeFormatter;
  *
  * RTGS sends transactions as XML messages over Message Queue (MQ).
  *
- * RAW PAYLOAD FORMAT (XML — 14 fields):
- * ──────────────────────────────────────
+ * RAW PAYLOAD FORMAT (XML — 16 fields, v3 adds SenderBank and ReceiverBank):
+ * ─────────────────────────────────────────────────────────────────────────
  * <RTGSMessage>
- *   <MsgId>RTGS20260402001234</MsgId>           ← sourceRef
- *   <SenderIFSC>SBIN0001234</SenderIFSC>        ← extra field
- *   <ReceiverIFSC>HDFC0005678</ReceiverIFSC>    ← extra field
- *   <SenderAcct>CA90012345</SenderAcct>          ← debitAccount (in normalizedPayload)
- *   <ReceiverAcct>CA90067890</ReceiverAcct>      ← creditAccount (in normalizedPayload)
+ *   <MsgId>RTGS20260402001234</MsgId>               ← sourceRef
+ *   <SenderIFSC>SBIN0001234</SenderIFSC>            ← extra field
+ *   <ReceiverIFSC>HDFC0005678</ReceiverIFSC>        ← extra field
+ *   <SenderAcct>RTGS-ACC-DR-001</SenderAcct>        ← debitAccount
+ *   <ReceiverAcct>RTGS-ACC-CR-001</ReceiverAcct>    ← creditAccount
  *   <Amount>5000000.00</Amount>
  *   <Currency>INR</Currency>
  *   <ValueDate>2026-04-02</ValueDate>
  *   <TxnType>CREDIT</TxnType>
  *   <Priority>HIGH</Priority>
- *   <RBIRefNo>RBI20260402XYZ</RBIRefNo>
+ *   <RBIRefNo>RBI20260402AAA</RBIRefNo>
  *   <Purpose>TRADE_SETTLEMENT</Purpose>
  *   <SubmittedAt>2026-04-02T10:30:00</SubmittedAt>
  *   <BatchWindow>W1</BatchWindow>
+ *   <SenderBank>SBI Bank</SenderBank>               ← NEW (v3) — fromBank
+ *   <ReceiverBank>HDFC Bank</ReceiverBank>           ← NEW (v3) — toBank
  * </RTGSMessage>
  *
  * RTGS MINIMUM AMOUNT RULE: Rs. 2,00,000 minimum for INR transactions.
  *
- * CHANGE LOG (v2):
- *   - currency removed from IncomingTransaction field.
- *     Still read from XML and stored in normalizedPayload for audit.
- *   - debitAccountNumber / creditAccountNumber setters removed.
- *     SenderAcct and ReceiverAcct now live ONLY in normalizedPayload
- *     as "debitAccount" and "creditAccount".
- *   - requiresAccountValidation removed — validation at settlement phase.
- *   - IncomingTransaction constructor no longer takes currency parameter.
+ * CHANGE LOG (v3 — fromBank / toBank):
+ *   - <SenderBank> and <ReceiverBank> tags added to RTGS XML format.
+ *   - Parsed using existing extractXmlTag() helper (pure Core Java, no library).
+ *   - Stored as txn.fromBank / txn.toBank AND inside normalizedPayload JSON.
+ *   - rtgs_transactions.xml updated with <SenderBank> and <ReceiverBank> tags.
  */
 public class RtgsAdapter implements TransactionAdapter {
 
@@ -52,6 +51,10 @@ public class RtgsAdapter implements TransactionAdapter {
             DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     private final SourceSystem rtgsSourceSystem;
+
+    // -----------------------------------------------------------------------
+    // Constructor
+    // -----------------------------------------------------------------------
 
     public RtgsAdapter() {
         this.rtgsSourceSystem = new SourceSystem(
@@ -64,6 +67,10 @@ public class RtgsAdapter implements TransactionAdapter {
         this.rtgsSourceSystem.setSourceSystemId(2L);
         this.rtgsSourceSystem.setCreatedBy("SYSTEM");
     }
+
+    // -----------------------------------------------------------------------
+    // TransactionAdapter implementation
+    // -----------------------------------------------------------------------
 
     @Override
     public IncomingTransaction adapt(String rawPayload) {
@@ -80,11 +87,11 @@ public class RtgsAdapter implements TransactionAdapter {
 
         if (!rawPayload.contains("<RTGSMessage>")) {
             throw new IllegalArgumentException(
-                "RtgsAdapter: Payload does not look like an RTGS XML message " +
-                "(missing <RTGSMessage> root tag). Got: " + rawPayload
+                "RtgsAdapter: Payload missing <RTGSMessage> root tag. Got: " + rawPayload
             );
         }
 
+        // ---- Parse canonical fields ----
         String sourceRef    = extractXmlTag(rawPayload, "MsgId");
         String senderAcct   = extractXmlTag(rawPayload, "SenderAcct");
         String receiverAcct = extractXmlTag(rawPayload, "ReceiverAcct");
@@ -92,6 +99,10 @@ public class RtgsAdapter implements TransactionAdapter {
         String currency     = extractXmlTag(rawPayload, "Currency");
         String valueDateStr = extractXmlTag(rawPayload, "ValueDate");
         String txnTypeStr   = extractXmlTag(rawPayload, "TxnType");
+
+        // ---- Parse fromBank / toBank ---- (NEW v3)
+        String senderBank   = extractXmlTag(rawPayload, "SenderBank");
+        String receiverBank = extractXmlTag(rawPayload, "ReceiverBank");
 
         if (sourceRef == null || senderAcct == null || receiverAcct == null
                 || amountStr == null || currency == null
@@ -103,6 +114,23 @@ public class RtgsAdapter implements TransactionAdapter {
             );
         }
 
+        if (senderBank == null || senderBank.isEmpty()) {
+            throw new IllegalArgumentException(
+                "RtgsAdapter: Missing <SenderBank> tag. " +
+                "All RTGS messages must include <SenderBank> and <ReceiverBank>. " +
+                "Got: " + rawPayload
+            );
+        }
+
+        if (receiverBank == null || receiverBank.isEmpty()) {
+            throw new IllegalArgumentException(
+                "RtgsAdapter: Missing <ReceiverBank> tag. " +
+                "All RTGS messages must include <SenderBank> and <ReceiverBank>. " +
+                "Got: " + rawPayload
+            );
+        }
+
+        // ---- Parse extra fields ----
         String senderIFSC   = extractXmlTag(rawPayload, "SenderIFSC");
         String receiverIFSC = extractXmlTag(rawPayload, "ReceiverIFSC");
         String priority     = extractXmlTag(rawPayload, "Priority");
@@ -111,28 +139,35 @@ public class RtgsAdapter implements TransactionAdapter {
         String submittedAt  = extractXmlTag(rawPayload, "SubmittedAt");
         String batchWindow  = extractXmlTag(rawPayload, "BatchWindow");
 
+        // ---- Type conversions ----
         BigDecimal amount       = new BigDecimal(amountStr);
         LocalDate valueDate     = LocalDate.parse(valueDateStr, RTGS_DATE_FORMAT);
         TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
 
+        // RTGS minimum amount rule — Rs. 2,00,000 for INR
         if ("INR".equalsIgnoreCase(currency) && amount.compareTo(new BigDecimal("200000")) < 0) {
             throw new IllegalArgumentException(
-                "RtgsAdapter: RTGS transactions must be minimum Rs. 2,00,000. Got: " + amount
+                "RtgsAdapter: RTGS minimum is Rs. 2,00,000. Got: " + amount
             );
         }
 
+        // ---- Build normalizedPayload — includes fromBank and toBank ----
         String normalizedPayload = buildNormalizedPayload(
             sourceRef, txnType, amount, currency, valueDate,
             senderAcct, receiverAcct,
             senderIFSC, receiverIFSC, priority,
-            rbiRefNo, purpose, submittedAt, batchWindow
+            rbiRefNo, purpose, submittedAt, batchWindow,
+            senderBank, receiverBank
         );
 
+        // ---- Build IncomingTransaction ----
         IncomingTransaction txn = new IncomingTransaction(
             rtgsSourceSystem, sourceRef, rawPayload,
             txnType, amount, valueDate, normalizedPayload
         );
 
+        txn.setFromBank(senderBank);
+        txn.setToBank(receiverBank);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("RTGS_ADAPTER");
 
@@ -144,6 +179,15 @@ public class RtgsAdapter implements TransactionAdapter {
         return SourceType.RTGS;
     }
 
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /**
+     * Extracts text between <tagName> and </tagName>.
+     * Pure Core Java — no XML library needed.
+     * Example: extractXmlTag("<Amount>5000000.00</Amount>", "Amount") → "5000000.00"
+     */
     private String extractXmlTag(String xml, String tagName) {
         String openTag  = "<" + tagName + ">";
         String closeTag = "</" + tagName + ">";
@@ -162,7 +206,8 @@ public class RtgsAdapter implements TransactionAdapter {
                                           String senderIFSC, String receiverIFSC,
                                           String priority, String rbiRefNo,
                                           String purpose, String submittedAt,
-                                          String batchWindow) {
+                                          String batchWindow,
+                                          String fromBank, String toBank) {
         return "{"
             + "\"source\":\"RTGS\","
             + "\"sourceRef\":\"" + sourceRef + "\","
@@ -172,6 +217,8 @@ public class RtgsAdapter implements TransactionAdapter {
             + "\"valueDate\":\"" + valueDate + "\","
             + "\"debitAccount\":\"" + debitAcc + "\","
             + "\"creditAccount\":\"" + creditAcc + "\","
+            + "\"fromBank\":\"" + fromBank + "\","
+            + "\"toBank\":\"" + toBank + "\","
             + "\"senderIFSC\":\"" + nullSafe(senderIFSC) + "\","
             + "\"receiverIFSC\":\"" + nullSafe(receiverIFSC) + "\","
             + "\"priority\":\"" + nullSafe(priority) + "\","
