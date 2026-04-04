@@ -16,7 +16,8 @@ import java.time.format.DateTimeFormatter;
  *
  * CBS sends transactions as pipe-delimited plain text flat files.
  *
- * RAW PAYLOAD FORMAT (10 pipe-separated fields):
+ * RAW PAYLOAD FORMAT (10 pipe-separated fields, CCY field kept for format
+ * compatibility but not stored as a separate entity field):
  * ─────────────────────────────────────────────────────────────
  *  Field         Position   Example Value
  * ─────────────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ import java.time.format.DateTimeFormatter;
  *  ACCT_DR       [1]        SB10023456       ← debit account
  *  ACCT_CR       [2]        SB10078901       ← credit account
  *  AMT           [3]        25000.00
- *  CCY           [4]        INR
+ *  CCY           [4]        INR              ← parsed but not stored as field
  *  TXN_DT        [5]        20260402         ← format: yyyyMMdd (Indian)
  *  TXN_TYPE      [6]        CREDIT / DEBIT
  *  NARRATION     [7]        Salary credit March 2026
@@ -35,27 +36,21 @@ import java.time.format.DateTimeFormatter;
  * EXAMPLE LINE:
  *   001|SB10023456|SB10078901|25000.00|INR|20260402|CREDIT|Salary credit March 2026|BLR001|EMP4521
  *
- * DATE FORMAT NOTE:
- *   CBS sends TXN_DT in yyyyMMdd format (e.g. 20260402 = 2nd April 2026).
- *   This adapter parses it using DateTimeFormatter.ofPattern("yyyyMMdd").
- *
- * NORMALIZED PAYLOAD NOTE:
- *   Core fields (sourceRef, txnType, amount, currency, valueDate,
- *   debitAccount, creditAccount) are the canonical fields.
- *   Extra CBS-specific fields (NARRATION, BRANCH_CODE, MAKER_ID)
- *   are stored inside normalizedPayload JSON for audit purposes.
+ * CHANGE LOG (v2):
+ *   - currency removed from IncomingTransaction field (INR-only system).
+ *     currency is still read from payload and stored in normalizedPayload for audit.
+ *   - debitAccountNumber and creditAccountNumber are now stored ONLY inside
+ *     normalizedPayload JSON as "debitAccount" and "creditAccount" keys.
+ *     The settlement engine reads account numbers from normalizedPayload.
+ *   - requiresAccountValidation removed — validation now happens at settlement phase.
+ *   - IncomingTransaction constructor no longer takes currency parameter.
  */
 public class CbsAdapter implements TransactionAdapter {
 
-    // Date format CBS uses: yyyyMMdd (e.g. 20260402)
     private static final DateTimeFormatter CBS_DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyyMMdd");
 
     private final SourceSystem cbsSourceSystem;
-
-    // -----------------------------------------------------------------------
-    // Constructor
-    // -----------------------------------------------------------------------
 
     public CbsAdapter() {
         this.cbsSourceSystem = new SourceSystem(
@@ -69,10 +64,6 @@ public class CbsAdapter implements TransactionAdapter {
         this.cbsSourceSystem.setCreatedBy("SYSTEM");
     }
 
-    // -----------------------------------------------------------------------
-    // TransactionAdapter implementation
-    // -----------------------------------------------------------------------
-
     @Override
     public IncomingTransaction adapt(String rawPayload) {
 
@@ -82,7 +73,6 @@ public class CbsAdapter implements TransactionAdapter {
             );
         }
 
-        // Skip comment lines (lines starting with #)
         if (rawPayload.trim().startsWith("#")) {
             throw new IllegalArgumentException(
                 "CbsAdapter: Skipping comment line"
@@ -91,7 +81,6 @@ public class CbsAdapter implements TransactionAdapter {
 
         String[] parts = rawPayload.split("\\|");
 
-        // CBS sends exactly 10 pipe-separated fields
         if (parts.length < 10) {
             throw new IllegalArgumentException(
                 "CbsAdapter: Invalid CBS payload. Expected 10 pipe-separated fields: " +
@@ -100,41 +89,37 @@ public class CbsAdapter implements TransactionAdapter {
             );
         }
 
-        // ---- Parse all 10 fields ----
-        String sourceRef        = parts[0].trim();   // CBS_TXN_ID
-        String debitAccountNum  = parts[1].trim();   // ACCT_DR
-        String creditAccountNum = parts[2].trim();   // ACCT_CR
-        BigDecimal amount       = new BigDecimal(parts[3].trim()); // AMT
-        String currency         = parts[4].trim();   // CCY
-        String txnDtStr         = parts[5].trim();   // TXN_DT — yyyyMMdd format
-        String txnTypeStr       = parts[6].trim();   // TXN_TYPE — CREDIT or DEBIT
-        String narration        = parts[7].trim();   // NARRATION — extra field
-        String branchCode       = parts[8].trim();   // BRANCH_CODE — extra field
-        String makerId          = parts[9].trim();   // MAKER_ID — extra field
+        String sourceRef        = parts[0].trim();
+        String debitAccountNum  = parts[1].trim();
+        String creditAccountNum = parts[2].trim();
+        BigDecimal amount       = new BigDecimal(parts[3].trim());
+        // currency read for normalizedPayload audit trail only — not stored as a field
+        String currency         = parts[4].trim();
+        String txnDtStr         = parts[5].trim();
+        String txnTypeStr       = parts[6].trim();
+        String narration        = parts[7].trim();
+        String branchCode       = parts[8].trim();
+        String makerId          = parts[9].trim();
 
-        // Parse date: CBS sends yyyyMMdd (Indian format), convert to LocalDate
-        LocalDate valueDate = LocalDate.parse(txnDtStr, CBS_DATE_FORMAT);
-
-        // Map txnType — CBS sends CREDIT or DEBIT (enum-compatible directly)
+        LocalDate valueDate     = LocalDate.parse(txnDtStr, CBS_DATE_FORMAT);
         TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
 
-        // Build normalizedPayload — canonical fields + CBS-specific extra fields
+        // Account numbers are embedded inside normalizedPayload as
+        // "debitAccount" and "creditAccount" — the settlement engine reads them from here.
         String normalizedPayload = buildNormalizedPayload(
             sourceRef, txnType, amount, currency, valueDate,
             debitAccountNum, creditAccountNum,
             narration, branchCode, makerId
         );
 
+        // IncomingTransaction constructor no longer accepts currency
         IncomingTransaction txn = new IncomingTransaction(
             cbsSourceSystem, sourceRef, rawPayload,
-            txnType, amount, currency, valueDate, normalizedPayload
+            txnType, amount, valueDate, normalizedPayload
         );
 
-        txn.setDebitAccountNumber(debitAccountNum);
-        txn.setCreditAccountNumber(creditAccountNum);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("CBS_ADAPTER");
-        // requiresAccountValidation stays true (default) — CBS sends real account numbers
 
         return txn;
     }
@@ -143,11 +128,6 @@ public class CbsAdapter implements TransactionAdapter {
     public SourceType getSourceType() {
         return SourceType.CBS;
     }
-
-    // -----------------------------------------------------------------------
-    // Private helper — builds normalizedPayload JSON string
-    // Canonical fields + CBS-specific extra fields all in one JSON
-    // -----------------------------------------------------------------------
 
     private String buildNormalizedPayload(String sourceRef, TransactionType txnType,
                                           BigDecimal amount, String currency,

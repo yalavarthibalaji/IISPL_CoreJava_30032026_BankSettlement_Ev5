@@ -1,7 +1,6 @@
 package com.iispl.banksettlement.dao.impl;
 
 import com.iispl.banksettlement.dao.IncomingTransactionDao;
-
 import com.iispl.banksettlement.entity.IncomingTransaction;
 import com.iispl.banksettlement.entity.SourceSystem;
 import com.iispl.banksettlement.enums.ProcessingStatus;
@@ -15,30 +14,32 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * IncomingTransactionDaoImpl
+ * IncomingTransactionDaoImpl — JDBC implementation of IncomingTransactionDao.
  *
- * JDBC implementation of IncomingTransactionDao.
- * Uses ConnectionPool.getConnection() for all DB operations.
- * Connects to Supabase PostgreSQL via HikariCP.
+ * CHANGE LOG (v2):
+ *   - currency column REMOVED from SQL_INSERT and mapRowToIncomingTransaction().
+ *     The DB schema column "currency" has also been dropped (see schema migration note).
+ *     Currency information is still preserved inside the normalized_payload JSON
+ *     column for audit purposes.
  *
- * IMPORTANT RULES followed here:
- *   1. Every Connection, PreparedStatement, ResultSet is closed in finally block
- *   2. Never use Statement — always use PreparedStatement (prevents SQL injection)
- *   3. Never catch and silently ignore exceptions — always throw RuntimeException
- *   4. Generated keys are read back and set on the object after INSERT
+ * DB SCHEMA MIGRATION REQUIRED:
+ *   Run this in Supabase SQL Editor before deploying v2:
+ *
+ *     ALTER TABLE incoming_transaction DROP COLUMN IF EXISTS currency;
+ *
+ *   If you want to keep the column for legacy data but stop writing to it:
+ *     ALTER TABLE incoming_transaction ALTER COLUMN currency DROP NOT NULL;
+ *   (In this case restore the column mapping in SQL_INSERT with a hardcoded 'INR'.)
  */
 public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
-    // -----------------------------------------------------------------------
-    // SQL CONSTANTS — all SQL in one place, easy to find and change
-    // -----------------------------------------------------------------------
-
+    // currency column removed — now lives only inside normalized_payload JSON
     private static final String SQL_INSERT =
             "INSERT INTO incoming_transaction " +
             "(source_system_id, source_ref, raw_payload, txn_type, amount, " +
-            "currency, value_date, processing_status, ingest_timestamp, " +
+            "value_date, processing_status, ingest_timestamp, " +
             "normalized_payload, created_at, updated_at, created_by, version) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     private static final String SQL_FIND_BY_ID =
             "SELECT t.*, s.system_code, s.protocol, s.connection_config, " +
@@ -70,10 +71,6 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
             "SET processing_status = ?, updated_at = ? " +
             "WHERE incoming_txn_id = ?";
 
-    // -----------------------------------------------------------------------
-    // save()
-    // -----------------------------------------------------------------------
-
     @Override
     public void save(IncomingTransaction txn) {
 
@@ -82,30 +79,30 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         try {
             conn = ConnectionPool.getConnection();
+            ps   = conn.prepareStatement(SQL_INSERT, Statement.RETURN_GENERATED_KEYS);
 
-            ps = conn.prepareStatement(SQL_INSERT, Statement.RETURN_GENERATED_KEYS);
-
+            // Parameter positions (currency removed — 13 params, was 14)
             ps.setLong(1, txn.getSourceSystem().getSourceSystemId());
             ps.setString(2, txn.getSourceRef());
             ps.setString(3, txn.getRawPayload());
             ps.setString(4, txn.getTxnType().name());
             ps.setBigDecimal(5, txn.getAmount());
-            ps.setString(6, txn.getCurrency());
-            ps.setDate(7, Date.valueOf(txn.getValueDate()));
-            ps.setString(8, txn.getProcessingStatus().name());
-            ps.setTimestamp(9, Timestamp.valueOf(txn.getIngestTimestamp()));
-            ps.setString(10, txn.getNormalizedPayload());
-            ps.setTimestamp(11, Timestamp.valueOf(txn.getCreatedAt()));
-            ps.setTimestamp(12, Timestamp.valueOf(txn.getUpdatedAt()));
-            ps.setString(13, txn.getCreatedBy());
-            ps.setInt(14, txn.getVersion());
+            // position 6 was currency — now removed
+            ps.setDate(6, Date.valueOf(txn.getValueDate()));
+            ps.setString(7, txn.getProcessingStatus().name());
+            ps.setTimestamp(8, Timestamp.valueOf(txn.getIngestTimestamp()));
+            ps.setString(9, txn.getNormalizedPayload());
+            ps.setTimestamp(10, Timestamp.valueOf(txn.getCreatedAt()));
+            ps.setTimestamp(11, Timestamp.valueOf(txn.getUpdatedAt()));
+            ps.setString(12, txn.getCreatedBy());
+            ps.setInt(13, txn.getVersion());
 
             int rowsAffected = ps.executeUpdate();
 
             if (rowsAffected == 0) {
                 throw new RuntimeException(
-                        "IncomingTransactionDaoImpl.save() failed — no rows inserted for sourceRef: "
-                                + txn.getSourceRef()
+                    "IncomingTransactionDaoImpl.save() failed — no rows inserted for sourceRef: "
+                    + txn.getSourceRef()
                 );
             }
 
@@ -122,16 +119,12 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         } catch (SQLException e) {
             throw new RuntimeException(
-                    "IncomingTransactionDaoImpl.save() failed: " + e.getMessage(), e
+                "IncomingTransactionDaoImpl.save() failed: " + e.getMessage(), e
             );
         } finally {
             closeResources(ps, conn);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // findById()
-    // -----------------------------------------------------------------------
 
     @Override
     public IncomingTransaction findById(Long incomingTxnId) {
@@ -142,7 +135,7 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_FIND_BY_ID);
+            ps   = conn.prepareStatement(SQL_FIND_BY_ID);
             ps.setLong(1, incomingTxnId);
             rs = ps.executeQuery();
 
@@ -153,16 +146,12 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         } catch (SQLException e) {
             throw new RuntimeException(
-                    "IncomingTransactionDaoImpl.findById() failed: " + e.getMessage(), e
+                "IncomingTransactionDaoImpl.findById() failed: " + e.getMessage(), e
             );
         } finally {
             closeResources(rs, ps, conn);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // findBySourceRef()
-    // -----------------------------------------------------------------------
 
     @Override
     public IncomingTransaction findBySourceRef(String sourceRef) {
@@ -173,7 +162,7 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_FIND_BY_SOURCE_REF);
+            ps   = conn.prepareStatement(SQL_FIND_BY_SOURCE_REF);
             ps.setString(1, sourceRef);
             rs = ps.executeQuery();
 
@@ -184,16 +173,12 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         } catch (SQLException e) {
             throw new RuntimeException(
-                    "IncomingTransactionDaoImpl.findBySourceRef() failed: " + e.getMessage(), e
+                "IncomingTransactionDaoImpl.findBySourceRef() failed: " + e.getMessage(), e
             );
         } finally {
             closeResources(rs, ps, conn);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // existsBySourceRef()
-    // -----------------------------------------------------------------------
 
     @Override
     public boolean existsBySourceRef(String sourceRef) {
@@ -204,28 +189,23 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_EXISTS_BY_SOURCE_REF);
+            ps   = conn.prepareStatement(SQL_EXISTS_BY_SOURCE_REF);
             ps.setString(1, sourceRef);
             rs = ps.executeQuery();
 
             if (rs.next()) {
                 return rs.getInt(1) > 0;
             }
-
             return false;
 
         } catch (SQLException e) {
             throw new RuntimeException(
-                    "IncomingTransactionDaoImpl.existsBySourceRef() failed: " + e.getMessage(), e
+                "IncomingTransactionDaoImpl.existsBySourceRef() failed: " + e.getMessage(), e
             );
         } finally {
             closeResources(rs, ps, conn);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // findByStatus()
-    // -----------------------------------------------------------------------
 
     @Override
     public List<IncomingTransaction> findByStatus(ProcessingStatus status) {
@@ -237,28 +217,23 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_FIND_BY_STATUS);
+            ps   = conn.prepareStatement(SQL_FIND_BY_STATUS);
             ps.setString(1, status.name());
             rs = ps.executeQuery();
 
             while (rs.next()) {
                 result.add(mapRowToIncomingTransaction(rs));
             }
-
             return result;
 
         } catch (SQLException e) {
             throw new RuntimeException(
-                    "IncomingTransactionDaoImpl.findByStatus() failed: " + e.getMessage(), e
+                "IncomingTransactionDaoImpl.findByStatus() failed: " + e.getMessage(), e
             );
         } finally {
             closeResources(rs, ps, conn);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // updateStatus()
-    // -----------------------------------------------------------------------
 
     @Override
     public void updateStatus(Long incomingTxnId, ProcessingStatus status) {
@@ -268,7 +243,7 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
         try {
             conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_UPDATE_STATUS);
+            ps   = conn.prepareStatement(SQL_UPDATE_STATUS);
             ps.setString(1, status.name());
             ps.setTimestamp(2, Timestamp.valueOf(LocalDateTime.now()));
             ps.setLong(3, incomingTxnId);
@@ -277,14 +252,14 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
             if (rowsAffected == 0) {
                 throw new RuntimeException(
-                        "IncomingTransactionDaoImpl.updateStatus() — no row found for id: "
-                                + incomingTxnId
+                    "IncomingTransactionDaoImpl.updateStatus() — no row found for id: "
+                    + incomingTxnId
                 );
             }
 
         } catch (SQLException e) {
             throw new RuntimeException(
-                    "IncomingTransactionDaoImpl.updateStatus() failed: " + e.getMessage(), e
+                "IncomingTransactionDaoImpl.updateStatus() failed: " + e.getMessage(), e
             );
         } finally {
             closeResources(ps, conn);
@@ -292,7 +267,7 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
     }
 
     // -----------------------------------------------------------------------
-    // Private helper — maps one ResultSet row to IncomingTransaction object
+    // mapRow — currency column removed
     // -----------------------------------------------------------------------
 
     private IncomingTransaction mapRowToIncomingTransaction(ResultSet rs) throws SQLException {
@@ -313,7 +288,7 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
         txn.setRawPayload(rs.getString("raw_payload"));
         txn.setTxnType(TransactionType.valueOf(rs.getString("txn_type")));
         txn.setAmount(rs.getBigDecimal("amount"));
-        txn.setCurrency(rs.getString("currency"));
+        // currency column removed — not read from ResultSet
         txn.setValueDate(rs.getDate("value_date").toLocalDate());
         txn.setProcessingStatus(ProcessingStatus.valueOf(rs.getString("processing_status")));
         txn.setIngestTimestamp(rs.getTimestamp("ingest_timestamp").toLocalDateTime());
@@ -322,48 +297,26 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
         txn.setVersion(rs.getInt("version"));
 
         Timestamp createdAt = rs.getTimestamp("created_at");
-        if (createdAt != null) {
-            txn.setCreatedAt(createdAt.toLocalDateTime());
-        }
+        if (createdAt != null) txn.setCreatedAt(createdAt.toLocalDateTime());
 
         Timestamp updatedAt = rs.getTimestamp("updated_at");
-        if (updatedAt != null) {
-            txn.setUpdatedAt(updatedAt.toLocalDateTime());
-        }
+        if (updatedAt != null) txn.setUpdatedAt(updatedAt.toLocalDateTime());
 
         return txn;
     }
 
     // -----------------------------------------------------------------------
-    // Private helpers — close JDBC resources safely
+    // Resource cleanup
     // -----------------------------------------------------------------------
 
     private void closeResources(PreparedStatement ps, Connection conn) {
-        try {
-            if (ps != null) ps.close();
-        } catch (SQLException ignored) {
-        }
-
-        try {
-            if (conn != null) conn.close();
-        } catch (SQLException ignored) {
-        }
+        try { if (ps   != null) ps.close();   } catch (SQLException ignored) {}
+        try { if (conn != null) conn.close();  } catch (SQLException ignored) {}
     }
 
     private void closeResources(ResultSet rs, PreparedStatement ps, Connection conn) {
-        try {
-            if (rs != null) rs.close();
-        } catch (SQLException ignored) {
-        }
-
-        try {
-            if (ps != null) ps.close();
-        } catch (SQLException ignored) {
-        }
-
-        try {
-            if (conn != null) conn.close();
-        } catch (SQLException ignored) {
-        }
+        try { if (rs   != null) rs.close();   } catch (SQLException ignored) {}
+        try { if (ps   != null) ps.close();   } catch (SQLException ignored) {}
+        try { if (conn != null) conn.close();  } catch (SQLException ignored) {}
     }
 }
