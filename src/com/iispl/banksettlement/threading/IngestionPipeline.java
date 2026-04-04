@@ -1,10 +1,6 @@
 package com.iispl.banksettlement.threading;
 
-import com.iispl.banksettlement.dao.AccountDao;
-import com.iispl.banksettlement.dao.CustomerDao;
 import com.iispl.banksettlement.dao.IncomingTransactionDao;
-import com.iispl.banksettlement.dao.impl.AccountDaoImpl;
-import com.iispl.banksettlement.dao.impl.CustomerDaoImpl;
 import com.iispl.banksettlement.dao.impl.IncomingTransactionDaoImpl;
 import com.iispl.banksettlement.entity.IncomingTransaction;
 import com.iispl.banksettlement.enums.SourceType;
@@ -17,19 +13,23 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * IngestionPipeline — Wires all ingestion phase components together.
+ * IngestionPipeline — creates and submits IngestionWorker tasks.
  *
- * Now includes AccountDao and CustomerDao for validation during ingestion.
- * The ingest() method accepts one raw payload string and submits it
- * as an IngestionWorker task to the thread pool.
+ * Holds the shared infrastructure: AdapterRegistry, BlockingQueue,
+ * ThreadPoolExecutor, and IncomingTransactionDao.
+ *
+ * CHANGE LOG (v2):
+ *   - AccountDao and CustomerDao fields REMOVED.
+ *     Account/customer validation no longer happens in the ingestion phase.
+ *     It has moved to the settlement engine (T3's responsibility).
+ *   - IngestionWorker constructor no longer receives AccountDao / CustomerDao.
+ *   - The public ingest() method signature is unchanged — callers are unaffected.
  */
 public class IngestionPipeline {
 
-    // Queue capacity — maximum 500 transactions waiting for settlement
     private final BlockingQueue<IncomingTransaction> blockingQueue =
             new LinkedBlockingQueue<>(500);
 
-    // Thread pool — 5 core threads, scales up to 20 under load
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
             5, 20, 60L, TimeUnit.SECONDS,
             new LinkedBlockingQueue<>(100),
@@ -38,33 +38,21 @@ public class IngestionPipeline {
 
     private final AdapterRegistry adapterRegistry;
     private final IncomingTransactionDao incomingTransactionDao;
-    private final AccountDao accountDao;
-    private final CustomerDao customerDao;
-
-    // -----------------------------------------------------------------------
-    // Constructor
-    // -----------------------------------------------------------------------
 
     public IngestionPipeline() {
         this.adapterRegistry        = new AdapterRegistry();
         this.incomingTransactionDao = new IncomingTransactionDaoImpl();
-        this.accountDao             = new AccountDaoImpl();
-        this.customerDao            = new CustomerDaoImpl();
 
         System.out.println("[IngestionPipeline] Initialised — pool ready, queue ready, " +
-                           "adapters registered, DAO objects created.");
+                           "adapters registered, DAO created.");
     }
 
-    // -----------------------------------------------------------------------
-    // ingest() — Submit one raw payload line for processing
-    // -----------------------------------------------------------------------
-
     /**
-     * Submit one raw payload string from a source system for ingestion.
-     * Creates an IngestionWorker and submits it to the thread pool.
+     * Submits one raw payload for the given source type to the thread pool.
+     * The IngestionWorker will adapt, deduplicate, save, and queue the transaction.
      *
-     * @param sourceType The source system type (CBS, RTGS, SWIFT, NEFT, UPI, FINTECH)
-     * @param rawPayload One raw payload string (one line from the input file)
+     * @param sourceType the source system this payload came from
+     * @param rawPayload the raw string payload (pipe-delimited, XML, fixed-width, or JSON)
      */
     public void ingest(SourceType sourceType, String rawPayload) {
 
@@ -73,18 +61,12 @@ public class IngestionPipeline {
                 rawPayload,
                 adapterRegistry,
                 blockingQueue,
-                incomingTransactionDao,
-                accountDao,
-                customerDao
+                incomingTransactionDao
         );
 
         executor.submit(worker);
         System.out.println("[IngestionPipeline] Submitted task for: " + sourceType);
     }
-
-    // -----------------------------------------------------------------------
-    // Getters
-    // -----------------------------------------------------------------------
 
     public BlockingQueue<IncomingTransaction> getBlockingQueue() {
         return blockingQueue;
@@ -94,21 +76,17 @@ public class IngestionPipeline {
         return blockingQueue.size();
     }
 
-    // -----------------------------------------------------------------------
-    // shutdown() — Clean shutdown of thread pool and connection pool
-    // -----------------------------------------------------------------------
-
+    /**
+     * Gracefully shuts down the thread pool and connection pool.
+     * Must be called after all ingest() calls are done.
+     */
     public void shutdown() {
 
         System.out.println("[IngestionPipeline] Shutting down...");
 
-        // Step 1: Stop accepting new tasks — already running tasks continue
         executor.shutdown();
 
         try {
-            // Step 2: Wait up to 60 seconds for ALL threads to finish their DB work.
-            // CRITICAL: ConnectionPool.shutdown() must only run AFTER all threads done.
-            // If we close the pool while a thread is still doing a DB call, it crashes.
             boolean finished = executor.awaitTermination(60, TimeUnit.SECONDS);
 
             if (!finished) {
@@ -124,7 +102,7 @@ public class IngestionPipeline {
             Thread.currentThread().interrupt();
 
         } finally {
-            // Step 3: Only NOW — after ALL worker threads are stopped — close the pool.
+            // Only close the pool AFTER all worker threads are fully stopped
             ConnectionPool.shutdown();
             System.out.println("[IngestionPipeline] ConnectionPool closed.");
         }

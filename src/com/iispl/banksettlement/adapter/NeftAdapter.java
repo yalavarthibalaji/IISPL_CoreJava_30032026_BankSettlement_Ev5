@@ -9,7 +9,6 @@ import com.iispl.banksettlement.enums.TransactionType;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 
 /**
  * NeftAdapter — Adapter for NEFT (National Electronic Funds Transfer) transactions.
@@ -24,49 +23,31 @@ import java.time.format.DateTimeFormatter;
  *  RECORD_TYPE    01-02      2        CR           ← CR=CREDIT, DR=DEBIT
  *  NEFT_REF       03-18      16       NEFT260402001← sourceRef; date at pos 5-10
  *  SENDER_IFSC    19-29      11       ICIC0002345  ← extra field
- *  SENDER_ACCT    30-49      20       CA00123456789012  ← debit account
+ *  SENDER_ACCT    30-49      20       CA00123456789012  ← debitAccount (normalizedPayload)
  *  BENE_IFSC      50-60      11       SBIN0001234  ← extra field
- *  BENE_ACCT      61-80      20       SB00987654321098  ← credit account
+ *  BENE_ACCT      61-80      20       SB00987654321098  ← creditAccount (normalizedPayload)
  *  BENE_NAME      81-110     30       RAMESH KUMAR ← extra field
  *  AMT            111-122    12       000010000.00
  *  PURPOSE_CODE   123-126    4        OTHR         ← extra field
  *  BATCH_NO       127-132    6        B00012       ← extra field
  * ──────────────────────────────────────────────────────────────
  *
- * NOTE: Positions above are 1-based. In Java substring() they become 0-based:
- *   position 01-02  → substring(0, 2)
- *   position 03-18  → substring(2, 18)
- *   ...and so on.
- *
  * DATE EXTRACTION FROM NEFT_REF:
- *   NEFT_REF format is "NEFT" + YYMMDD + sequence (e.g. "NEFT260402001")
- *   Date portion is at characters 5-10 (0-based: index 4-9) = "260402"
- *   Format is yyMMdd → 260402 = 2nd April 2026
- *   Parsed as: year = 2000 + 26 = 2026, month = 04, day = 02
+ *   NEFT_REF format: "NEFT" + yyMMdd + sequence (e.g. "NEFT260402001")
+ *   Date portion is at index 4-9 = "260402" (yyMMdd)
  *
- * TXNTYPE MAPPING:
- *   RECORD_TYPE "CR" → TransactionType.CREDIT
- *   RECORD_TYPE "DR" → TransactionType.DEBIT
- *
- * CANONICAL FIELDS → IncomingTransaction fields:
- *   NEFT_REF    → sourceRef
- *   SENDER_ACCT → debitAccountNumber
- *   BENE_ACCT   → creditAccountNumber
- *   AMT         → amount  (strip leading zeros, parse as BigDecimal)
- *   (fixed INR) → currency
- *   (from ref)  → valueDate (extracted from NEFT_REF positions 5-10)
- *   RECORD_TYPE → txnType (CR→CREDIT, DR→DEBIT)
- *
- * EXTRA FIELDS → normalizedPayload JSON:
- *   SENDER_IFSC, BENE_IFSC, BENE_NAME, PURPOSE_CODE, BATCH_NO
+ * CHANGE LOG (v2):
+ *   - currency removed as IncomingTransaction field (NEFT is always INR).
+ *     Still hardcoded as "INR" inside normalizedPayload for audit.
+ *   - debitAccountNumber / creditAccountNumber setters removed.
+ *     SENDER_ACCT and BENE_ACCT now live ONLY in normalizedPayload
+ *     as "debitAccount" and "creditAccount".
+ *   - requiresAccountValidation removed — validation at settlement phase.
+ *   - IncomingTransaction constructor no longer takes currency parameter.
  */
 public class NeftAdapter implements TransactionAdapter {
 
     private final SourceSystem neftSourceSystem;
-
-    // -----------------------------------------------------------------------
-    // Constructor
-    // -----------------------------------------------------------------------
 
     public NeftAdapter() {
         this.neftSourceSystem = new SourceSystem(
@@ -80,10 +61,6 @@ public class NeftAdapter implements TransactionAdapter {
         this.neftSourceSystem.setCreatedBy("SYSTEM");
     }
 
-    // -----------------------------------------------------------------------
-    // TransactionAdapter implementation
-    // -----------------------------------------------------------------------
-
     @Override
     public IncomingTransaction adapt(String rawPayload) {
 
@@ -93,14 +70,12 @@ public class NeftAdapter implements TransactionAdapter {
             );
         }
 
-        // Skip header/comment lines
         if (rawPayload.trim().startsWith("#")) {
             throw new IllegalArgumentException(
                 "NeftAdapter: Skipping comment line"
             );
         }
 
-        // NEFT fixed-width record must be at least 132 characters
         if (rawPayload.length() < 132) {
             throw new IllegalArgumentException(
                 "NeftAdapter: NEFT fixed-width record must be at least 132 characters. " +
@@ -108,41 +83,26 @@ public class NeftAdapter implements TransactionAdapter {
             );
         }
 
-        // ---- Extract fields using fixed-width positions (0-based) ----
-        // Position 01-02  → index 0-2
-        String recordType  = rawPayload.substring(0, 2).trim();   // CR or DR
-        // Position 03-18  → index 2-18
-        String neftRef     = rawPayload.substring(2, 18).trim();  // e.g. NEFT260402001
-        // Position 19-29  → index 18-29
-        String senderIFSC  = rawPayload.substring(18, 29).trim(); // e.g. ICIC0002345
-        // Position 30-49  → index 29-49
-        String senderAcct  = rawPayload.substring(29, 49).trim(); // debit account
-        // Position 50-60  → index 49-60
-        String beneIFSC    = rawPayload.substring(49, 60).trim(); // e.g. SBIN0001234
-        // Position 61-80  → index 60-80
-        String beneAcct    = rawPayload.substring(60, 80).trim(); // credit account
-        // Position 81-110 → index 80-110
-        String beneName    = rawPayload.substring(80, 110).trim();// beneficiary name
-        // Position 111-122→ index 110-122
-        String amtStr      = rawPayload.substring(110, 122).trim();// e.g. 000010000.00
-        // Position 123-126→ index 122-126
-        String purposeCode = rawPayload.substring(122, 126).trim();// e.g. OTHR
-        // Position 127-132→ index 126-132
-        String batchNo     = rawPayload.substring(126, 132).trim();// e.g. B00012
+        // Fixed-width field extraction (0-based Java substring indices)
+        String recordType  = rawPayload.substring(0, 2).trim();
+        String neftRef     = rawPayload.substring(2, 18).trim();
+        String senderIFSC  = rawPayload.substring(18, 29).trim();
+        String senderAcct  = rawPayload.substring(29, 49).trim();
+        String beneIFSC    = rawPayload.substring(49, 60).trim();
+        String beneAcct    = rawPayload.substring(60, 80).trim();
+        String beneName    = rawPayload.substring(80, 110).trim();
+        String amtStr      = rawPayload.substring(110, 122).trim();
+        String purposeCode = rawPayload.substring(122, 126).trim();
+        String batchNo     = rawPayload.substring(126, 132).trim();
 
-        // ---- Validate required fields ----
         if (recordType.isEmpty() || neftRef.isEmpty() || senderAcct.isEmpty()
                 || beneAcct.isEmpty() || amtStr.isEmpty()) {
             throw new IllegalArgumentException(
                 "NeftAdapter: Missing required fields in NEFT record. " +
-                "RECORD_TYPE, NEFT_REF, SENDER_ACCT, BENE_ACCT, AMT must not be blank. " +
-                "Got: " + rawPayload
+                "RECORD_TYPE, NEFT_REF, SENDER_ACCT, BENE_ACCT, AMT must not be blank."
             );
         }
 
-        // ---- Map RECORD_TYPE → TransactionType ----
-        // CR = Credit (money coming in to beneficiary)
-        // DR = Debit  (money going out from sender)
         TransactionType txnType;
         switch (recordType.toUpperCase()) {
             case "CR":
@@ -153,23 +113,17 @@ public class NeftAdapter implements TransactionAdapter {
                 break;
             default:
                 throw new IllegalArgumentException(
-                    "NeftAdapter: Unknown RECORD_TYPE '" + recordType +
-                    "'. Expected CR or DR."
+                    "NeftAdapter: Unknown RECORD_TYPE '" + recordType + "'. Expected CR or DR."
                 );
         }
 
-        // ---- Parse amount — strip leading zeros, e.g. "000010000.00" → 10000.00 ----
         BigDecimal amount = new BigDecimal(amtStr);
 
-        // NEFT is always INR (domestic Indian transfer)
+        // NEFT is always INR — stored in normalizedPayload for audit, not as a field
         String currency = "INR";
 
-        // ---- Extract valueDate from NEFT_REF ----
-        // NEFT_REF format: "NEFT" + yyMMdd + sequence
-        // e.g. "NEFT260402001" → date portion at index 4-9 = "260402" (yyMMdd)
         LocalDate valueDate = extractValueDateFromNeftRef(neftRef);
 
-        // ---- Build normalizedPayload — canonical + extra NEFT fields ----
         String normalizedPayload = buildNormalizedPayload(
             neftRef, txnType, amount, currency, valueDate,
             senderAcct, beneAcct,
@@ -178,14 +132,11 @@ public class NeftAdapter implements TransactionAdapter {
 
         IncomingTransaction txn = new IncomingTransaction(
             neftSourceSystem, neftRef, rawPayload,
-            txnType, amount, currency, valueDate, normalizedPayload
+            txnType, amount, valueDate, normalizedPayload
         );
 
-        txn.setDebitAccountNumber(senderAcct);
-        txn.setCreditAccountNumber(beneAcct);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("NEFT_ADAPTER");
-        // requiresAccountValidation stays true (default) — NEFT sends real account numbers
 
         return txn;
     }
@@ -195,45 +146,24 @@ public class NeftAdapter implements TransactionAdapter {
         return SourceType.NEFT;
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
     /**
-     * Extracts the value date from NEFT_REF.
-     *
-     * NEFT_REF format: "NEFT" + yyMMdd + sequence
-     * Example: "NEFT260402001"
-     *   → date at index 4-9 (inclusive) = "260402"
-     *   → yyMMdd: yy=26 (2026), MM=04 (April), dd=02
-     *   → LocalDate = 2026-04-02
-     *
-     * @param neftRef The NEFT_REF string from the fixed-width record
-     * @return        LocalDate parsed from the embedded date
+     * Extracts value date from NEFT_REF.
+     * Format: "NEFT" + yyMMdd + sequence → index 4-9 = "260402" → 2026-04-02
      */
     private LocalDate extractValueDateFromNeftRef(String neftRef) {
-        // NEFT_REF must be at least 10 chars: "NEFT" (4) + "yyMMdd" (6)
         if (neftRef.length() < 10) {
             throw new IllegalArgumentException(
                 "NeftAdapter: NEFT_REF too short to extract date. " +
                 "Expected at least 10 chars (NEFT + yyMMdd + ...). Got: " + neftRef
             );
         }
-
-        // Extract 6-char date portion starting at index 4 (after "NEFT")
-        String yymmdd = neftRef.substring(4, 10); // e.g. "260402"
-
-        int year  = 2000 + Integer.parseInt(yymmdd.substring(0, 2)); // 2026
-        int month = Integer.parseInt(yymmdd.substring(2, 4));         // 04
-        int day   = Integer.parseInt(yymmdd.substring(4, 6));         // 02
-
+        String yymmdd = neftRef.substring(4, 10);
+        int year  = 2000 + Integer.parseInt(yymmdd.substring(0, 2));
+        int month = Integer.parseInt(yymmdd.substring(2, 4));
+        int day   = Integer.parseInt(yymmdd.substring(4, 6));
         return LocalDate.of(year, month, day);
     }
 
-    /**
-     * Builds the normalizedPayload JSON string.
-     * Contains all canonical fields + all NEFT-specific extra fields.
-     */
     private String buildNormalizedPayload(String sourceRef, TransactionType txnType,
                                           BigDecimal amount, String currency,
                                           LocalDate valueDate,
@@ -258,7 +188,6 @@ public class NeftAdapter implements TransactionAdapter {
             + "}";
     }
 
-    /** Returns the value if not null, otherwise returns empty string. */
     private String nullSafe(String value) {
         return value != null ? value : "";
     }

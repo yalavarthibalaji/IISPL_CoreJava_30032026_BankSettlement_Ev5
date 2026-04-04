@@ -16,72 +16,50 @@ import java.time.format.DateTimeFormatter;
  * FintechAdapter — Adapter for third-party Fintech partner transactions.
  *
  * Fintech partners (PhonePe, Razorpay, PayU etc.) send proprietary JSON
- * via REST webhooks. The JSON structure is nested with sender and receiver objects.
+ * via REST webhooks with nested sender/receiver objects.
  *
  * RAW PAYLOAD FORMAT (Proprietary JSON — 18 fields including nested):
  * ──────────────────────────────────────────────────────────────────────
  * {
  *   "ft_ref"       : "FT-2026-00112233",          ← sourceRef
- *   "partner_id"   : "PHONEPE_PARTNER_01",         ← extra field
+ *   "partner_id"   : "PHONEPE_PARTNER_01",
  *   "sender"       : {
- *     "account"    : "ACC-PH-123456",              ← debitAccountNumber
- *     "name"       : "Suresh Nair",                ← extra field
- *     "kyc_level"  : "FULL"                        ← extra field
+ *     "account"    : "ACC-PH-123456",              ← debitAccount (normalizedPayload)
+ *     "name"       : "Suresh Nair",
+ *     "kyc_level"  : "FULL"
  *   },
  *   "receiver"     : {
- *     "account"    : "ACC-PH-789012",              ← creditAccountNumber
- *     "name"       : "Kavya Stores",               ← extra field
- *     "type"       : "MERCHANT"                    ← extra field
+ *     "account"    : "ACC-PH-789012",              ← creditAccount (normalizedPayload)
+ *     "name"       : "Kavya Stores",
+ *     "type"       : "MERCHANT"
  *   },
  *   "txn_amount"   : "12500.00",
  *   "txn_currency" : "INR",
- *   "txn_category" : "P2M",                        ← extra field
- *   "initiated_at" : "2026-04-02T13:00:00Z",       ← valueDate (date part only)
- *   "risk_score"   : "LOW",                        ← extra field
- *   "platform"     : "ANDROID",                    ← extra field
- *   "wallet_id"    : "WLT-9900112",                ← extra field
- *   "promo_code"   : "SAVE10",                     ← extra field
- *   "metadata"     : {
- *     "order_id"   : "ORD-77221",                  ← extra field
- *     "store_id"   : "STR-445"                     ← extra field
- *   }
+ *   "txn_category" : "P2M",
+ *   "initiated_at" : "2026-04-02T13:00:00Z",
+ *   "risk_score"   : "LOW",
+ *   "platform"     : "ANDROID",
+ *   "wallet_id"    : "WLT-9900112",
+ *   "promo_code"   : "SAVE10",
+ *   "metadata"     : { "order_id":"ORD-77221", "store_id":"STR-445" }
  * }
  * ──────────────────────────────────────────────────────────────────────
  *
- * DATE FORMAT NOTE:
- *   Fintech sends initiated_at as ISO 8601 with timezone suffix Z:
- *   "2026-04-02T13:00:00Z" — we strip the "Z" and parse the date portion only.
- *
- * NESTED OBJECT PARSING:
- *   sender.account and receiver.account are inside nested JSON objects.
- *   We use extractNestedJsonField() which first extracts the nested block
- *   then extracts the field from within it.
- *
- * CANONICAL FIELDS → IncomingTransaction fields:
- *   ft_ref         → sourceRef
- *   sender.account → debitAccountNumber
- *   receiver.account → creditAccountNumber
- *   txn_amount     → amount
- *   txn_currency   → currency
- *   initiated_at   → valueDate (date part only)
- *   txn_category   → txnType (P2M/P2P → CREDIT, etc.)
- *
- * EXTRA FIELDS → normalizedPayload JSON:
- *   partner_id, sender.name, sender.kyc_level, receiver.name,
- *   receiver.type, txn_category, risk_score, platform,
- *   wallet_id, promo_code, metadata.order_id, metadata.store_id
+ * CHANGE LOG (v2):
+ *   - currency removed from IncomingTransaction field (INR-only system).
+ *     txn_currency still read and stored in normalizedPayload for audit.
+ *   - sender.account / receiver.account no longer set as debitAccountNumber /
+ *     creditAccountNumber (those fields removed). They now live ONLY inside
+ *     normalizedPayload as "debitAccount" and "creditAccount".
+ *   - requiresAccountValidation removed.
+ *   - IncomingTransaction constructor no longer takes currency parameter.
  */
 public class FintechAdapter implements TransactionAdapter {
 
-    // Fintech sends initiated_at as "2026-04-02T13:00:00Z" — strip Z before parsing
     private static final DateTimeFormatter FINTECH_DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     private final SourceSystem fintechSourceSystem;
-
-    // -----------------------------------------------------------------------
-    // Constructor
-    // -----------------------------------------------------------------------
 
     public FintechAdapter() {
         this.fintechSourceSystem = new SourceSystem(
@@ -95,10 +73,6 @@ public class FintechAdapter implements TransactionAdapter {
         this.fintechSourceSystem.setCreatedBy("SYSTEM");
     }
 
-    // -----------------------------------------------------------------------
-    // TransactionAdapter implementation
-    // -----------------------------------------------------------------------
-
     @Override
     public IncomingTransaction adapt(String rawPayload) {
 
@@ -108,27 +82,22 @@ public class FintechAdapter implements TransactionAdapter {
             );
         }
 
-        // Skip comment lines
         if (rawPayload.trim().startsWith("#")) {
             throw new IllegalArgumentException("FintechAdapter: Skipping comment line");
         }
 
-        // ---- Extract top-level canonical fields ----
-        String sourceRef     = extractJsonField(rawPayload, "ft_ref");
-        String amountStr     = extractJsonField(rawPayload, "txn_amount");
-        String currency      = extractJsonField(rawPayload, "txn_currency");
-        String initiatedAt   = extractJsonField(rawPayload, "initiated_at");
-        String txnCategory   = extractJsonField(rawPayload, "txn_category");
+        String sourceRef   = extractJsonField(rawPayload, "ft_ref");
+        String amountStr   = extractJsonField(rawPayload, "txn_amount");
+        String currency    = extractJsonField(rawPayload, "txn_currency");
+        String initiatedAt = extractJsonField(rawPayload, "initiated_at");
+        String txnCategory = extractJsonField(rawPayload, "txn_category");
 
-        // ---- Extract nested sender and receiver account numbers ----
-        // sender.account and receiver.account are inside nested JSON blocks
         String senderBlock   = extractJsonBlock(rawPayload, "sender");
         String receiverBlock = extractJsonBlock(rawPayload, "receiver");
 
         String senderAccount   = (senderBlock   != null) ? extractJsonField(senderBlock,   "account") : null;
         String receiverAccount = (receiverBlock != null) ? extractJsonField(receiverBlock, "account") : null;
 
-        // ---- Validate all required fields ----
         if (sourceRef == null || amountStr == null || currency == null
                 || initiatedAt == null || senderAccount == null || receiverAccount == null) {
             throw new IllegalArgumentException(
@@ -138,41 +107,30 @@ public class FintechAdapter implements TransactionAdapter {
             );
         }
 
-        // ---- Extract extra top-level fields ----
-        String partnerId    = extractJsonField(rawPayload, "partner_id");
-        String riskScore    = extractJsonField(rawPayload, "risk_score");
-        String platform     = extractJsonField(rawPayload, "platform");
-        String walletId     = extractJsonField(rawPayload, "wallet_id");
-        String promoCode    = extractJsonField(rawPayload, "promo_code");
+        String partnerId  = extractJsonField(rawPayload, "partner_id");
+        String riskScore  = extractJsonField(rawPayload, "risk_score");
+        String platform   = extractJsonField(rawPayload, "platform");
+        String walletId   = extractJsonField(rawPayload, "wallet_id");
+        String promoCode  = extractJsonField(rawPayload, "promo_code");
 
-        // ---- Extract extra nested sender fields ----
-        String senderName     = (senderBlock != null) ? extractJsonField(senderBlock,   "name")      : null;
-        String senderKycLevel = (senderBlock != null) ? extractJsonField(senderBlock,   "kyc_level") : null;
+        String senderName     = (senderBlock   != null) ? extractJsonField(senderBlock,   "name")      : null;
+        String senderKycLevel = (senderBlock   != null) ? extractJsonField(senderBlock,   "kyc_level") : null;
+        String receiverName   = (receiverBlock != null) ? extractJsonField(receiverBlock, "name")      : null;
+        String receiverType   = (receiverBlock != null) ? extractJsonField(receiverBlock, "type")      : null;
 
-        // ---- Extract extra nested receiver fields ----
-        String receiverName = (receiverBlock != null) ? extractJsonField(receiverBlock, "name") : null;
-        String receiverType = (receiverBlock != null) ? extractJsonField(receiverBlock, "type") : null;
-
-        // ---- Extract metadata nested fields ----
         String metadataBlock = extractJsonBlock(rawPayload, "metadata");
-        String orderId  = (metadataBlock != null) ? extractJsonField(metadataBlock, "order_id") : null;
-        String storeId  = (metadataBlock != null) ? extractJsonField(metadataBlock, "store_id") : null;
+        String orderId = (metadataBlock != null) ? extractJsonField(metadataBlock, "order_id") : null;
+        String storeId = (metadataBlock != null) ? extractJsonField(metadataBlock, "store_id") : null;
 
-        // ---- Type conversions ----
         BigDecimal amount = new BigDecimal(amountStr);
 
-        // Parse initiated_at — strip trailing "Z" (UTC timezone marker) before parsing
-        // "2026-04-02T13:00:00Z" → "2026-04-02T13:00:00" → LocalDateTime → date only
         String initiatedAtClean = initiatedAt.endsWith("Z")
                 ? initiatedAt.substring(0, initiatedAt.length() - 1)
                 : initiatedAt;
         LocalDate valueDate = LocalDateTime.parse(initiatedAtClean, FINTECH_DATE_FORMAT).toLocalDate();
 
-        // Map txn_category → TransactionType
-        // P2M (Person to Merchant) and P2P (Person to Person) are both CREDIT to receiver
         TransactionType txnType = mapTxnCategory(txnCategory);
 
-        // ---- Build normalizedPayload — canonical + all Fintech extra fields ----
         String normalizedPayload = buildNormalizedPayload(
             sourceRef, txnType, amount, currency, valueDate,
             senderAccount, receiverAccount,
@@ -184,14 +142,11 @@ public class FintechAdapter implements TransactionAdapter {
 
         IncomingTransaction txn = new IncomingTransaction(
             fintechSourceSystem, sourceRef, rawPayload,
-            txnType, amount, currency, valueDate, normalizedPayload
+            txnType, amount, valueDate, normalizedPayload
         );
 
-        txn.setDebitAccountNumber(senderAccount);
-        txn.setCreditAccountNumber(receiverAccount);
         txn.setProcessingStatus(ProcessingStatus.VALIDATED);
         txn.setCreatedBy("FINTECH_ADAPTER");
-        // requiresAccountValidation stays true (default) — Fintech sends real account numbers
 
         return txn;
     }
@@ -201,30 +156,15 @@ public class FintechAdapter implements TransactionAdapter {
         return SourceType.FINTECH;
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
-    /**
-     * Extracts a simple string value from a JSON string by field name.
-     * Handles both quoted strings and bare numeric/boolean values.
-     *
-     * Example: extractJsonField("{\"ft_ref\":\"FT-2026-001\"}", "ft_ref") → "FT-2026-001"
-     */
     private String extractJsonField(String json, String fieldName) {
         String searchKey = "\"" + fieldName + "\":";
         int keyIndex = json.indexOf(searchKey);
         if (keyIndex == -1) return null;
-
         int valueStart = keyIndex + searchKey.length();
-
-        // Skip whitespace
         while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
             valueStart++;
         }
-
         boolean isQuoted = (valueStart < json.length() && json.charAt(valueStart) == '"');
-
         if (isQuoted) {
             int openQuote  = valueStart;
             int closeQuote = json.indexOf('"', openQuote + 1);
@@ -238,35 +178,17 @@ public class FintechAdapter implements TransactionAdapter {
         }
     }
 
-    /**
-     * Extracts a nested JSON object block by its key name.
-     * Returns the content INSIDE the curly braces (not including the key or braces).
-     *
-     * Example:
-     *   Input: {"sender":{"account":"ACC-001","name":"Suresh"}, ...}
-     *   extractJsonBlock(input, "sender") → "\"account\":\"ACC-001\",\"name\":\"Suresh\""
-     *
-     * This extracted block can then be passed to extractJsonField() to get inner values.
-     *
-     * @param json      The full JSON string
-     * @param blockName The key whose value is a nested JSON object
-     * @return          The content inside the nested object, or null if not found
-     */
     private String extractJsonBlock(String json, String blockName) {
         String searchKey = "\"" + blockName + "\":{";
         int startIndex = json.indexOf(searchKey);
         if (startIndex == -1) {
-            // Also try with space: "sender" : {
             searchKey = "\"" + blockName + "\": {";
             startIndex = json.indexOf(searchKey);
             if (startIndex == -1) return null;
         }
-
-        int blockStart = startIndex + searchKey.length(); // position just after "{"
-        int depth      = 1; // we are inside one opening brace
-        int i          = blockStart;
-
-        // Walk through the string counting braces to find the matching closing brace
+        int blockStart = startIndex + searchKey.length();
+        int depth = 1;
+        int i = blockStart;
         while (i < json.length() && depth > 0) {
             char c = json.charAt(i);
             if      (c == '{') depth++;
@@ -274,21 +196,10 @@ public class FintechAdapter implements TransactionAdapter {
             if (depth > 0) i++;
             else break;
         }
-
-        if (depth != 0) return null; // malformed JSON — no matching closing brace found
-
-        return json.substring(blockStart, i); // content inside the block
+        if (depth != 0) return null;
+        return json.substring(blockStart, i);
     }
 
-    /**
-     * Maps Fintech txn_category values to our TransactionType enum.
-     *
-     * P2M (Person to Merchant) → CREDIT
-     * P2P (Person to Person)   → CREDIT
-     * REFUND                   → REVERSAL
-     * FEE                      → FEE
-     * Default                  → CREDIT
-     */
     private TransactionType mapTxnCategory(String txnCategory) {
         if (txnCategory == null) return TransactionType.CREDIT;
         switch (txnCategory.toUpperCase().trim()) {
@@ -304,11 +215,6 @@ public class FintechAdapter implements TransactionAdapter {
         }
     }
 
-    /**
-     * Builds the normalizedPayload JSON string.
-     * Contains all canonical fields + all Fintech-specific extra fields
-     * including nested sender, receiver, and metadata values.
-     */
     private String buildNormalizedPayload(String sourceRef, TransactionType txnType,
                                           BigDecimal amount, String currency,
                                           LocalDate valueDate,
@@ -344,7 +250,6 @@ public class FintechAdapter implements TransactionAdapter {
             + "}";
     }
 
-    /** Returns the value if not null, otherwise returns empty string. */
     private String nullSafe(String value) {
         return value != null ? value : "";
     }

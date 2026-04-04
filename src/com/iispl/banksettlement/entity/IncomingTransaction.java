@@ -13,10 +13,9 @@ import java.time.LocalDateTime;
  *
  * WHY THIS EXISTS:
  *   CBS sends pipe-delimited flat files, RTGS sends XML over MQ,
- *   SWIFT sends MT103 messages, NEFT sends fixed-width batch files,
- *   UPI sends JSON webhooks, Fintech sends proprietary JSON —
- *   each format is completely different. The adapter classes convert
- *   each raw format into this single standard class.
+ *   NEFT sends fixed-width batch files, UPI sends JSON webhooks,
+ *   Fintech sends proprietary JSON — each format is completely different.
+ *   The adapter classes convert each raw format into this single standard class.
  *   After adaptation, all downstream processing works only with IncomingTransaction.
  *
  * FLOW:
@@ -25,31 +24,52 @@ import java.time.LocalDateTime;
  * HAS-A relationship: contains a SourceSystem object to know its origin.
  * Extends BaseEntity: inherits id, createdAt, updatedAt, createdBy, version.
  *
- * NEW FIELD — requiresAccountValidation:
- *   Most source systems send actual bank account numbers that can be
- *   validated against the database. UPI is an exception — it sends
- *   VPA addresses (e.g. ramesh@okicici) instead of account numbers,
- *   so account/customer DB validation is skipped for UPI transactions.
- *   All other source systems have this flag set to true by default.
+ * DESIGN DECISIONS (v2):
+ *
+ *   1. debitAccountNumber / creditAccountNumber REMOVED:
+ *      Account numbers are embedded inside normalizedPayload JSON as
+ *      "debitAccount" and "creditAccount" keys. The settlement engine
+ *      will parse them from there when building Transaction sub-objects.
+ *      Keeping them only in normalizedPayload avoids duplication and
+ *      makes IncomingTransaction a clean transport object.
+ *
+ *   2. failureReason REMOVED:
+ *      Validation has moved to the settlement phase. The ingestion phase
+ *      no longer fails transactions — it only receives, adapts, and queues.
+ *      Any failure reason will be stored in SettlementRecord.failureReason
+ *      at the settlement layer.
+ *
+ *   3. requiresAccountValidation REMOVED:
+ *      No validation happens during ingestion now (see point 2).
+ *      UPI VPA handling is documented in UpiAdapter and will be handled
+ *      by the settlement engine when it reads the normalizedPayload.
+ *
+ *   4. currency REMOVED:
+ *      All transactions in this system are in INR (Indian Rupee).
+ *      Currency is not stored as a separate field. If any adapter
+ *      historically set a currency field, that information may still
+ *      appear inside the normalizedPayload JSON for audit purposes.
+ *
+ * NOTE ON SWIFT:
+ *   SWIFT (cross-border) has been removed as a source system. This system
+ *   now handles Indian domestic bank accounts only.
  */
 public class IncomingTransaction extends BaseEntity {
-
-    private static final long serialVersionUID = 1L;
 
     // Unique identifier for this incoming transaction record
     private Long incomingTxnId;
 
     // HAS-A: which source system sent this transaction
-    // (CBS, RTGS, SWIFT, NEFT, UPI, FINTECH)
+    // (CBS, RTGS, NEFT, UPI, FINTECH)
     private SourceSystem sourceSystem;
 
     // The original reference number from the source system
-    // CBS  → CBS_TXN_ID,  RTGS → MsgId,  SWIFT → :20: field
-    // NEFT → NEFT_REF,    UPI  → upiTxnId, Fintech → ft_ref
+    // CBS  → CBS_TXN_ID,  RTGS → MsgId
+    // NEFT → NEFT_REF,    UPI  → upiTxnId,  Fintech → ft_ref
     private String sourceRef;
 
     // The raw original payload as received — stored for audit/replay purposes
-    // CBS=pipe-delimited, RTGS=XML, SWIFT=MT103, NEFT=fixed-width, UPI=JSON, Fintech=JSON
+    // CBS=pipe-delimited, RTGS=XML, NEFT=fixed-width, UPI=JSON, Fintech=JSON
     private String rawPayload;
 
     // What kind of transaction is this? (CREDIT, DEBIT, REVERSAL etc.)
@@ -58,9 +78,6 @@ public class IncomingTransaction extends BaseEntity {
     // Transaction amount — using BigDecimal because financial amounts
     // must NEVER use double or float (precision loss causes money errors!)
     private BigDecimal amount;
-
-    // ISO 4217 currency code e.g. "INR", "USD"
-    private String currency;
 
     // The date on which this transaction should be settled/valued
     // All adapters normalise their date formats to LocalDate (dd-MM-yyyy internally)
@@ -72,39 +89,23 @@ public class IncomingTransaction extends BaseEntity {
     // Exact timestamp when this transaction was received by our system
     private LocalDateTime ingestTimestamp;
 
-    // The cleaned/standardised payload after adapter processing
+    // The cleaned/standardised payload after adapter processing.
     // Always JSON format regardless of original source format.
-    // All source-specific extra fields (NARRATION, RBIRefNo, BIC codes etc.)
-    // are stored here as key-value pairs in JSON.
+    //
+    // IMPORTANT: account numbers are stored HERE, not as separate fields.
+    // Keys in this JSON:
+    //   "debitAccount"  — the sending/debiting account number (or VPA for UPI)
+    //   "creditAccount" — the receiving/crediting account number (or VPA for UPI)
+    //   "source"        — source system name
+    //   "sourceRef"     — original reference
+    //   "txnType"       — transaction type
+    //   "amount"        — amount as number
+    //   "valueDate"     — settlement date
+    //   + all source-specific extra fields (NARRATION, RBIRefNo, IFSC codes etc.)
+    //
+    // The settlement engine reads debitAccount and creditAccount from here
+    // to look up Account records and build CreditTransaction / DebitTransaction.
     private String normalizedPayload;
-
-    // The debit account identifier parsed from the raw payload.
-    // CBS  → ACCT_DR,        RTGS → SenderAcct
-    // SWIFT→ :50K: account,  NEFT → SENDER_ACCT
-    // UPI  → payerVpa (VPA address — not a bank account number)
-    // Fintech → sender.account
-    private String debitAccountNumber;
-
-    // The credit account identifier parsed from the raw payload.
-    // CBS  → ACCT_CR,        RTGS → ReceiverAcct
-    // SWIFT→ :59: account,   NEFT → BENE_ACCT
-    // UPI  → payeeVpa (VPA address — not a bank account number)
-    // Fintech → receiver.account
-    private String creditAccountNumber;
-
-    // If this transaction failed validation or processing, the reason is stored here.
-    // null if transaction is valid and successfully processed.
-    private String failureReason;
-
-    // Controls whether IngestionWorker should validate debit/credit accounts
-    // and their linked customers against the database.
-    //
-    // TRUE  (default) — CBS, RTGS, SWIFT, NEFT, Fintech send real bank account
-    //                   numbers that exist in the accounts table. Validate them.
-    //
-    // FALSE           — UPI sends VPA addresses (e.g. ramesh@okicici), NOT account
-    //                   numbers. DB account/customer validation is skipped for UPI.
-    private boolean requiresAccountValidation;
 
     // -----------------------------------------------------------------------
     // Constructors
@@ -112,48 +113,43 @@ public class IncomingTransaction extends BaseEntity {
 
     /**
      * Default constructor.
-     * Sets processingStatus to RECEIVED, ingestTimestamp to now,
-     * and requiresAccountValidation to true (safe default for all non-UPI sources).
+     * Sets processingStatus to RECEIVED and ingestTimestamp to now.
      */
     public IncomingTransaction() {
         super();
-        this.processingStatus          = ProcessingStatus.RECEIVED;
-        this.ingestTimestamp           = LocalDateTime.now();
-        this.requiresAccountValidation = true; // default — all sources validate except UPI
+        this.processingStatus = ProcessingStatus.RECEIVED;
+        this.ingestTimestamp  = LocalDateTime.now();
     }
 
     /**
      * Parameterized constructor — used by adapter classes to build
      * a fully populated IncomingTransaction from a raw payload.
      *
-     * requiresAccountValidation defaults to true here.
-     * UPI adapter must call setRequiresAccountValidation(false) after using this constructor.
+     * NOTE: currency parameter has been removed. All transactions are INR.
      *
      * @param sourceSystem      The source system that sent this transaction
      * @param sourceRef         Original reference from the source system
      * @param rawPayload        The raw payload as received
      * @param txnType           Type of transaction (CREDIT/DEBIT etc.)
      * @param amount            Transaction amount (BigDecimal — no float/double!)
-     * @param currency          ISO currency code e.g. "INR"
      * @param valueDate         Settlement value date
      * @param normalizedPayload Cleaned JSON payload after normalisation
+     *                          (must contain "debitAccount" and "creditAccount" keys)
      */
     public IncomingTransaction(SourceSystem sourceSystem, String sourceRef,
                                String rawPayload, TransactionType txnType,
-                               BigDecimal amount, String currency,
-                               LocalDate valueDate, String normalizedPayload) {
+                               BigDecimal amount, LocalDate valueDate,
+                               String normalizedPayload) {
         super();
-        this.sourceSystem              = sourceSystem;
-        this.sourceRef                 = sourceRef;
-        this.rawPayload                = rawPayload;
-        this.txnType                   = txnType;
-        this.amount                    = amount;
-        this.currency                  = currency;
-        this.valueDate                 = valueDate;
-        this.normalizedPayload         = normalizedPayload;
-        this.processingStatus          = ProcessingStatus.RECEIVED;
-        this.ingestTimestamp           = LocalDateTime.now();
-        this.requiresAccountValidation = true; // default — UPI adapter overrides this to false
+        this.sourceSystem     = sourceSystem;
+        this.sourceRef        = sourceRef;
+        this.rawPayload       = rawPayload;
+        this.txnType          = txnType;
+        this.amount           = amount;
+        this.valueDate        = valueDate;
+        this.normalizedPayload = normalizedPayload;
+        this.processingStatus = ProcessingStatus.RECEIVED;
+        this.ingestTimestamp  = LocalDateTime.now();
     }
 
     // -----------------------------------------------------------------------
@@ -208,14 +204,6 @@ public class IncomingTransaction extends BaseEntity {
         this.amount = amount;
     }
 
-    public String getCurrency() {
-        return currency;
-    }
-
-    public void setCurrency(String currency) {
-        this.currency = currency;
-    }
-
     public LocalDate getValueDate() {
         return valueDate;
     }
@@ -248,38 +236,6 @@ public class IncomingTransaction extends BaseEntity {
         this.normalizedPayload = normalizedPayload;
     }
 
-    public String getDebitAccountNumber() {
-        return debitAccountNumber;
-    }
-
-    public void setDebitAccountNumber(String debitAccountNumber) {
-        this.debitAccountNumber = debitAccountNumber;
-    }
-
-    public String getCreditAccountNumber() {
-        return creditAccountNumber;
-    }
-
-    public void setCreditAccountNumber(String creditAccountNumber) {
-        this.creditAccountNumber = creditAccountNumber;
-    }
-
-    public String getFailureReason() {
-        return failureReason;
-    }
-
-    public void setFailureReason(String failureReason) {
-        this.failureReason = failureReason;
-    }
-
-    public boolean isRequiresAccountValidation() {
-        return requiresAccountValidation;
-    }
-
-    public void setRequiresAccountValidation(boolean requiresAccountValidation) {
-        this.requiresAccountValidation = requiresAccountValidation;
-    }
-
     // -----------------------------------------------------------------------
     // toString
     // -----------------------------------------------------------------------
@@ -292,13 +248,8 @@ public class IncomingTransaction extends BaseEntity {
                ", sourceRef='" + sourceRef + '\'' +
                ", txnType=" + txnType +
                ", amount=" + amount +
-               ", currency='" + currency + '\'' +
                ", valueDate=" + valueDate +
-               ", debitAccountNumber='" + debitAccountNumber + '\'' +
-               ", creditAccountNumber='" + creditAccountNumber + '\'' +
                ", processingStatus=" + processingStatus +
-               ", requiresAccountValidation=" + requiresAccountValidation +
-               ", failureReason='" + failureReason + '\'' +
                ", ingestTimestamp=" + ingestTimestamp +
                '}';
     }

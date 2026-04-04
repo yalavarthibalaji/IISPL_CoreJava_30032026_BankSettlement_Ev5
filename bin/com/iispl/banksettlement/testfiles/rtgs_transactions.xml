@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RTGS Transaction File — XML over MQ format -->
+<!-- Each RTGSMessage element is one transaction -->
+<!-- Minimum amount: Rs. 2,00,000 for INR -->
+<RTGSBatch>
+
+    <RTGSMessage>
+        <MsgId>RTGS20260402001234</MsgId>
+        <SenderIFSC>SBIN0001234</SenderIFSC>
+        <ReceiverIFSC>HDFC0005678</ReceiverIFSC>
+        <SenderAcct>RTGS-ACC-DR-001</SenderAcct>
+        <ReceiverAcct>RTGS-ACC-CR-001</ReceiverAcct>
+        <Amount>5000000.00</Amount>
+        <Currency>INR</Currency>
+        <ValueDate>2026-04-02</ValueDate>
+        <TxnType>CREDIT</TxnType>
+        <Priority>HIGH</Priority>
+        <RBIRefNo>RBI20260402AAA</RBIRefNo>
+        <Purpose>TRADE_SETTLEMENT</Purpose>
+        <SubmittedAt>2026-04-02T10:30:00</SubmittedAt>
+        <BatchWindow>W1</BatchWindow>
+    </RTGSMessage>
+
+    <RTGSMessage>
+        <MsgId>RTGS20260402001235</MsgId>
+        <SenderIFSC>ICIC0002345</SenderIFSC>
+        <ReceiverIFSC>AXIS0003456</ReceiverIFSC>
+        <SenderAcct>RTGS-ACC-DR-002</SenderAcct>
+        <ReceiverAcct>RTGS-ACC-CR-002</ReceiverAcct>
+        <Amount>2500000.00</Amount>
+        <Currency>INR</Currency>
+        <ValueDate>2026-04-02</ValueDate>
+        <TxnType>CREDIT</TxnType>
+        <Priority>NORMAL</Priority>
+        <RBIRefNo>RBI20260402BBB</RBIRefNo>
+        <Purpose>PROPERTY_PURCHASE</Purpose>
+        <SubmittedAt>2026-04-02T11:15:00</SubmittedAt>
+        <BatchWindow>W1</BatchWindow>
+    </RTGSMessage>
+
+    <RTGSMessage>
+        <MsgId>RTGS20260403001236</MsgId>
+        <SenderIFSC>HDFC0005678</SenderIFSC>
+        <ReceiverIFSC>SBIN0001234</ReceiverIFSC>
+        <SenderAcct>RTGS-ACC-DR-003</SenderAcct>
+        <ReceiverAcct>RTGS-ACC-CR-003</ReceiverAcct>
+        <Amount>10000000.00</Amount>
+        <Currency>INR</Currency>
+        <ValueDate>2026-04-03</ValueDate>
+        <TxnType>CREDIT</TxnType>
+        <Priority>HIGH</Priority>
+        <RBIRefNo>RBI20260403CCC</RBIRefNo>
+        <Purpose>GOVT_SECURITIES</Purpose>
+        <SubmittedAt>2026-04-03T09:00:00</SubmittedAt>
+        <BatchWindow>W2</BatchWindow>
+    </RTGSMessage>
+
+</RTGSBatch>
