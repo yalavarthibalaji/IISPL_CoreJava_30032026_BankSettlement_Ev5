@@ -18,41 +18,51 @@ import java.time.format.DateTimeFormatter;
  * Fintech partners (PhonePe, Razorpay, PayU etc.) send proprietary JSON
  * via REST webhooks with nested sender/receiver objects.
  *
- * RAW PAYLOAD FORMAT (Proprietary JSON — 18 fields including nested):
+ * RAW PAYLOAD FORMAT (Proprietary JSON — 20 fields including nested):
  * ──────────────────────────────────────────────────────────────────────
  * {
- *   "ft_ref"       : "FT-2026-00112233",          ← sourceRef
- *   "partner_id"   : "PHONEPE_PARTNER_01",
- *   "sender"       : {
- *     "account"    : "ACC-PH-123456",              ← debitAccount (normalizedPayload)
- *     "name"       : "Suresh Nair",
- *     "kyc_level"  : "FULL"
+ *   "ft_ref"        : "FT-2026-00112233",          ← sourceRef
+ *   "partner_id"    : "PHONEPE_PARTNER_01",
+ *   "sender"        : {
+ *     "account"     : "ACC-PH-123456",              ← debitAccount
+ *     "name"        : "Suresh Nair",
+ *     "kyc_level"   : "FULL"
  *   },
- *   "receiver"     : {
- *     "account"    : "ACC-PH-789012",              ← creditAccount (normalizedPayload)
- *     "name"       : "Kavya Stores",
- *     "type"       : "MERCHANT"
+ *   "receiver"      : {
+ *     "account"     : "ACC-PH-789012",              ← creditAccount
+ *     "name"        : "Kavya Stores",
+ *     "type"        : "MERCHANT"
  *   },
- *   "txn_amount"   : "12500.00",
- *   "txn_currency" : "INR",
- *   "txn_category" : "P2M",
- *   "initiated_at" : "2026-04-02T13:00:00Z",
- *   "risk_score"   : "LOW",
- *   "platform"     : "ANDROID",
- *   "wallet_id"    : "WLT-9900112",
- *   "promo_code"   : "SAVE10",
- *   "metadata"     : { "order_id":"ORD-77221", "store_id":"STR-445" }
+ *   "txn_amount"    : "12500.00",
+ *   "txn_currency"  : "INR",
+ *   "txn_category"  : "P2M / P2P / REFUND / FEE",
+ *   "initiated_at"  : "2026-04-02T13:00:00Z",
+ *   "risk_score"    : "LOW",
+ *   "platform"      : "ANDROID",
+ *   "wallet_id"     : "WLT-9900112",
+ *   "promo_code"    : "SAVE10",
+ *   "original_ref"  : "FT-2026-00112233",           ← NEW — populated for REFUND only
+ *   "reversal_reason": "DUPLICATE_PAYMENT",          ← NEW — populated for REFUND only
+ *   "metadata"      : { "order_id":"ORD-77221", "store_id":"STR-445" }
  * }
  * ──────────────────────────────────────────────────────────────────────
  *
- * CHANGE LOG (v2):
- *   - currency removed from IncomingTransaction field (INR-only system).
- *     txn_currency still read and stored in normalizedPayload for audit.
- *   - sender.account / receiver.account no longer set as debitAccountNumber /
- *     creditAccountNumber (those fields removed). They now live ONLY inside
- *     normalizedPayload as "debitAccount" and "creditAccount".
- *   - requiresAccountValidation removed.
- *   - IncomingTransaction constructor no longer takes currency parameter.
+ * txn_category → TransactionType mapping:
+ *   P2M    → CREDIT
+ *   P2P    → CREDIT
+ *   REFUND → REVERSAL  (undo of a previous fintech payment)
+ *   FEE    → FEE
+ *
+ * For REFUND transactions:
+ *   - original_ref must be present and non-empty
+ *   - reversal_reason must be present and non-empty
+ *   - sender and receiver accounts are swapped vs the original transaction
+ *
+ * CHANGE LOG (v4 — REVERSAL support):
+ *   - original_ref and reversal_reason top-level JSON fields added.
+ *   - Both parsed and stored in normalizedPayload as "originalTxnRef" and "reversalReason".
+ *   - Validation: REFUND category requires non-empty original_ref and reversal_reason.
+ *   - fintech_transactions.json updated with two REFUND entries.
  */
 public class FintechAdapter implements TransactionAdapter {
 
@@ -86,12 +96,18 @@ public class FintechAdapter implements TransactionAdapter {
             throw new IllegalArgumentException("FintechAdapter: Skipping comment line");
         }
 
+        // ---- Extract canonical fields ----
         String sourceRef   = extractJsonField(rawPayload, "ft_ref");
         String amountStr   = extractJsonField(rawPayload, "txn_amount");
         String currency    = extractJsonField(rawPayload, "txn_currency");
         String initiatedAt = extractJsonField(rawPayload, "initiated_at");
         String txnCategory = extractJsonField(rawPayload, "txn_category");
 
+        // ---- Extract reversal-specific fields (NEW v4) ----
+        String originalRef    = nullSafe(extractJsonField(rawPayload, "original_ref"));
+        String reversalReason = nullSafe(extractJsonField(rawPayload, "reversal_reason"));
+
+        // ---- Extract nested sender / receiver blocks ----
         String senderBlock   = extractJsonBlock(rawPayload, "sender");
         String receiverBlock = extractJsonBlock(rawPayload, "receiver");
 
@@ -107,6 +123,26 @@ public class FintechAdapter implements TransactionAdapter {
             );
         }
 
+        // ---- Map txn_category → TransactionType ----
+        TransactionType txnType = mapTxnCategory(txnCategory);
+
+        // ---- Validate: REFUND must have original_ref and reversal_reason ----
+        if (txnType == TransactionType.REVERSAL) {
+            if (originalRef.isEmpty()) {
+                throw new IllegalArgumentException(
+                    "FintechAdapter: REFUND transaction must have a non-empty 'original_ref'. " +
+                    "Got: " + rawPayload
+                );
+            }
+            if (reversalReason.isEmpty()) {
+                throw new IllegalArgumentException(
+                    "FintechAdapter: REFUND transaction must have a non-empty 'reversal_reason'. " +
+                    "Got: " + rawPayload
+                );
+            }
+        }
+
+        // ---- Extract remaining optional fields ----
         String partnerId  = extractJsonField(rawPayload, "partner_id");
         String riskScore  = extractJsonField(rawPayload, "risk_score");
         String platform   = extractJsonField(rawPayload, "platform");
@@ -129,17 +165,18 @@ public class FintechAdapter implements TransactionAdapter {
                 : initiatedAt;
         LocalDate valueDate = LocalDateTime.parse(initiatedAtClean, FINTECH_DATE_FORMAT).toLocalDate();
 
-        TransactionType txnType = mapTxnCategory(txnCategory);
-
+        // ---- Build normalizedPayload ----
         String normalizedPayload = buildNormalizedPayload(
             sourceRef, txnType, amount, currency, valueDate,
             senderAccount, receiverAccount,
             partnerId, senderName, senderKycLevel,
             receiverName, receiverType,
             nullSafe(txnCategory), riskScore, platform,
-            walletId, promoCode, orderId, storeId
+            walletId, promoCode, orderId, storeId,
+            originalRef, reversalReason
         );
 
+        // ---- Build IncomingTransaction ----
         IncomingTransaction txn = new IncomingTransaction(
             fintechSourceSystem, sourceRef, rawPayload,
             txnType, amount, valueDate, normalizedPayload
@@ -155,6 +192,10 @@ public class FintechAdapter implements TransactionAdapter {
     public SourceType getSourceType() {
         return SourceType.FINTECH;
     }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
 
     private String extractJsonField(String json, String fieldName) {
         String searchKey = "\"" + fieldName + "\":";
@@ -200,6 +241,15 @@ public class FintechAdapter implements TransactionAdapter {
         return json.substring(blockStart, i);
     }
 
+    /**
+     * Maps Fintech txn_category to our TransactionType enum.
+     *
+     * P2M    → CREDIT   (Person to Merchant payment)
+     * P2P    → CREDIT   (Person to Person payment)
+     * REFUND → REVERSAL (Refund = reversal of a previous payment)
+     * FEE    → FEE      (Platform fee charge)
+     * default→ CREDIT
+     */
     private TransactionType mapTxnCategory(String txnCategory) {
         if (txnCategory == null) return TransactionType.CREDIT;
         switch (txnCategory.toUpperCase().trim()) {
@@ -225,7 +275,8 @@ public class FintechAdapter implements TransactionAdapter {
                                           String txnCategory, String riskScore,
                                           String platform, String walletId,
                                           String promoCode, String orderId,
-                                          String storeId) {
+                                          String storeId,
+                                          String originalTxnRef, String reversalReason) {
         return "{"
             + "\"source\":\"FINTECH\","
             + "\"sourceRef\":\"" + sourceRef + "\","
@@ -246,7 +297,9 @@ public class FintechAdapter implements TransactionAdapter {
             + "\"walletId\":\"" + nullSafe(walletId) + "\","
             + "\"promoCode\":\"" + nullSafe(promoCode) + "\","
             + "\"orderId\":\"" + nullSafe(orderId) + "\","
-            + "\"storeId\":\"" + nullSafe(storeId) + "\""
+            + "\"storeId\":\"" + nullSafe(storeId) + "\","
+            + "\"originalTxnRef\":\"" + originalTxnRef + "\","
+            + "\"reversalReason\":\"" + reversalReason + "\""
             + "}";
     }
 

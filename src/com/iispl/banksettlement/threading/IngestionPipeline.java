@@ -18,12 +18,13 @@ import java.util.concurrent.TimeUnit;
  * Holds the shared infrastructure: AdapterRegistry, BlockingQueue,
  * ThreadPoolExecutor, and IncomingTransactionDao.
  *
- * CHANGE LOG (v2):
- *   - AccountDao and CustomerDao fields REMOVED.
- *     Account/customer validation no longer happens in the ingestion phase.
- *     It has moved to the settlement engine (T3's responsibility).
- *   - IngestionWorker constructor no longer receives AccountDao / CustomerDao.
- *   - The public ingest() method signature is unchanged — callers are unaffected.
+ * CHANGE LOG (v3 — shutdownExecutorOnly added):
+ *   - shutdownExecutorOnly() added for use by SettlementProcessorTest MODE_B.
+ *     This shuts down the ThreadPoolExecutor (stops ingestion workers) WITHOUT
+ *     closing the ConnectionPool. The dispatcher thread that runs AFTER ingestion
+ *     still needs the ConnectionPool open to do its DB saves.
+ *   - The original shutdown() method still closes the ConnectionPool — use it
+ *     in FileIngestionTest where no dispatcher runs after.
  */
 public class IngestionPipeline {
 
@@ -77,8 +78,45 @@ public class IngestionPipeline {
     }
 
     /**
-     * Gracefully shuts down the thread pool and connection pool.
-     * Must be called after all ingest() calls are done.
+     * Shuts down only the ThreadPoolExecutor — stops accepting new ingestion tasks
+     * and waits for existing workers to finish.
+     *
+     * DOES NOT close the ConnectionPool.
+     *
+     * USE THIS in SettlementProcessorTest MODE_B:
+     *   After ingestion workers are done, the dispatcher thread still needs
+     *   the ConnectionPool open to save transactions to their subtype tables.
+     *   Calling shutdown() here would close the pool too early.
+     */
+    public void shutdownExecutorOnly() {
+
+        System.out.println("[IngestionPipeline] Shutting down executor (ConnectionPool stays open)...");
+
+        executor.shutdown();
+
+        try {
+            boolean finished = executor.awaitTermination(60, TimeUnit.SECONDS);
+
+            if (!finished) {
+                System.out.println("[IngestionPipeline] Timeout — forcing remaining threads to stop.");
+                executor.shutdownNow();
+                executor.awaitTermination(10, TimeUnit.SECONDS);
+            }
+
+            System.out.println("[IngestionPipeline] Executor shutdown done. Queue size: "
+                    + blockingQueue.size());
+
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Gracefully shuts down both the ThreadPoolExecutor AND the ConnectionPool.
+     *
+     * USE THIS in FileIngestionTest — where no dispatcher runs after ingestion.
+     * Do NOT use this in SettlementProcessorTest MODE_B (use shutdownExecutorOnly instead).
      */
     public void shutdown() {
 
