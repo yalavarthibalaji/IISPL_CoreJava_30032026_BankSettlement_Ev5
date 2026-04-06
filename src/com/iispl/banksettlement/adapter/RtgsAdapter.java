@@ -16,34 +16,46 @@ import java.time.format.DateTimeFormatter;
  *
  * RTGS sends transactions as XML messages over Message Queue (MQ).
  *
- * RAW PAYLOAD FORMAT (XML — 16 fields, v3 adds SenderBank and ReceiverBank):
+ * RAW PAYLOAD FORMAT (XML — 18 fields):
  * ─────────────────────────────────────────────────────────────────────────
  * <RTGSMessage>
- *   <MsgId>RTGS20260402001234</MsgId>               ← sourceRef
- *   <SenderIFSC>SBIN0001234</SenderIFSC>            ← extra field
- *   <ReceiverIFSC>HDFC0005678</ReceiverIFSC>        ← extra field
- *   <SenderAcct>RTGS-ACC-DR-001</SenderAcct>        ← debitAccount
- *   <ReceiverAcct>RTGS-ACC-CR-001</ReceiverAcct>    ← creditAccount
+ *   <MsgId>RTGS20260402001234</MsgId>
+ *   <SenderIFSC>SBIN0001234</SenderIFSC>
+ *   <ReceiverIFSC>HDFC0005678</ReceiverIFSC>
+ *   <SenderAcct>RTGS-ACC-DR-001</SenderAcct>
+ *   <ReceiverAcct>RTGS-ACC-CR-001</ReceiverAcct>
  *   <Amount>5000000.00</Amount>
  *   <Currency>INR</Currency>
  *   <ValueDate>2026-04-02</ValueDate>
- *   <TxnType>CREDIT</TxnType>
+ *   <TxnType>CREDIT / DEBIT / INTRABANK / REVERSAL</TxnType>
  *   <Priority>HIGH</Priority>
  *   <RBIRefNo>RBI20260402AAA</RBIRefNo>
  *   <Purpose>TRADE_SETTLEMENT</Purpose>
  *   <SubmittedAt>2026-04-02T10:30:00</SubmittedAt>
  *   <BatchWindow>W1</BatchWindow>
- *   <SenderBank>SBI Bank</SenderBank>               ← NEW (v3) — fromBank
- *   <ReceiverBank>HDFC Bank</ReceiverBank>           ← NEW (v3) — toBank
+ *   <SenderBank>SBI Bank</SenderBank>
+ *   <ReceiverBank>HDFC Bank</ReceiverBank>
+ *   <OriginalTxnRef></OriginalTxnRef>   ← populated only for REVERSAL
+ *   <ReversalReason></ReversalReason>   ← populated only for REVERSAL
  * </RTGSMessage>
+ *
+ * TxnType values:
+ *   CREDIT    → Standard credit transfer
+ *   DEBIT     → Standard debit transfer
+ *   INTRABANK → Settlement between two different banks via RTGS rail
+ *               (maps to TransactionType.INTRABANK in Java)
+ *   REVERSAL  → Undo of a previous RTGS transaction
+ *               (requires OriginalTxnRef and ReversalReason tags)
  *
  * RTGS MINIMUM AMOUNT RULE: Rs. 2,00,000 minimum for INR transactions.
  *
- * CHANGE LOG (v3 — fromBank / toBank):
- *   - <SenderBank> and <ReceiverBank> tags added to RTGS XML format.
- *   - Parsed using existing extractXmlTag() helper (pure Core Java, no library).
- *   - Stored as txn.fromBank / txn.toBank AND inside normalizedPayload JSON.
- *   - rtgs_transactions.xml updated with <SenderBank> and <ReceiverBank> tags.
+ * CHANGE LOG (v4 — INTRABANK and REVERSAL support):
+ *   - TxnType switch expanded: CREDIT, DEBIT, INTRABANK → TransactionType.INTRABANK,
+ *     REVERSAL → TransactionType.REVERSAL.
+ *   - <OriginalTxnRef> and <ReversalReason> XML tags added.
+ *   - Both are parsed and stored in normalizedPayload for the settlement engine.
+ *   - Reversal validation: if TxnType=REVERSAL, OriginalTxnRef must not be empty.
+ *   - rtgs_transactions.xml updated with INTRABANK and REVERSAL records.
  */
 public class RtgsAdapter implements TransactionAdapter {
 
@@ -100,33 +112,31 @@ public class RtgsAdapter implements TransactionAdapter {
         String valueDateStr = extractXmlTag(rawPayload, "ValueDate");
         String txnTypeStr   = extractXmlTag(rawPayload, "TxnType");
 
-        // ---- Parse fromBank / toBank ---- (NEW v3)
+        // ---- Parse bank fields ----
         String senderBank   = extractXmlTag(rawPayload, "SenderBank");
         String receiverBank = extractXmlTag(rawPayload, "ReceiverBank");
+
+        // ---- Parse reversal-specific fields (empty string if tag absent) ----
+        String originalTxnRef = nullSafe(extractXmlTag(rawPayload, "OriginalTxnRef"));
+        String reversalReason = nullSafe(extractXmlTag(rawPayload, "ReversalReason"));
 
         if (sourceRef == null || senderAcct == null || receiverAcct == null
                 || amountStr == null || currency == null
                 || valueDateStr == null || txnTypeStr == null) {
             throw new IllegalArgumentException(
-                "RtgsAdapter: Missing required XML fields. " +
-                "Expected: MsgId, SenderAcct, ReceiverAcct, Amount, Currency, ValueDate, TxnType. " +
-                "Got: " + rawPayload
+                "RtgsAdapter: Missing required XML fields in: " + rawPayload
             );
         }
 
         if (senderBank == null || senderBank.isEmpty()) {
             throw new IllegalArgumentException(
-                "RtgsAdapter: Missing <SenderBank> tag. " +
-                "All RTGS messages must include <SenderBank> and <ReceiverBank>. " +
-                "Got: " + rawPayload
+                "RtgsAdapter: Missing <SenderBank> tag."
             );
         }
 
         if (receiverBank == null || receiverBank.isEmpty()) {
             throw new IllegalArgumentException(
-                "RtgsAdapter: Missing <ReceiverBank> tag. " +
-                "All RTGS messages must include <SenderBank> and <ReceiverBank>. " +
-                "Got: " + rawPayload
+                "RtgsAdapter: Missing <ReceiverBank> tag."
             );
         }
 
@@ -139,10 +149,46 @@ public class RtgsAdapter implements TransactionAdapter {
         String submittedAt  = extractXmlTag(rawPayload, "SubmittedAt");
         String batchWindow  = extractXmlTag(rawPayload, "BatchWindow");
 
+        // ---- Map TxnType string → TransactionType enum ----
+        //
+        // CREDIT    → standard inward credit
+        // DEBIT     → standard outward debit
+        // INTRABANK → inter-bank bilateral settlement via RTGS
+        //             maps to TransactionType.INTRABANK (same as InterBankTransaction)
+        // REVERSAL  → undo of a previous RTGS transaction
+        //
+        TransactionType txnType;
+        switch (txnTypeStr.toUpperCase()) {
+            case "CREDIT":
+                txnType = TransactionType.CREDIT;
+                break;
+            case "DEBIT":
+                txnType = TransactionType.DEBIT;
+                break;
+            case "INTRABANK":
+                txnType = TransactionType.INTRABANK;
+                break;
+            case "REVERSAL":
+                txnType = TransactionType.REVERSAL;
+                break;
+            default:
+                throw new IllegalArgumentException(
+                    "RtgsAdapter: Unknown TxnType '" + txnTypeStr +
+                    "'. Expected CREDIT, DEBIT, INTRABANK, or REVERSAL."
+                );
+        }
+
+        // ---- Validate: REVERSAL must have OriginalTxnRef ----
+        if (txnType == TransactionType.REVERSAL && originalTxnRef.isEmpty()) {
+            throw new IllegalArgumentException(
+                "RtgsAdapter: REVERSAL transaction must have a non-empty <OriginalTxnRef>. " +
+                "Got: " + rawPayload
+            );
+        }
+
         // ---- Type conversions ----
-        BigDecimal amount       = new BigDecimal(amountStr);
-        LocalDate valueDate     = LocalDate.parse(valueDateStr, RTGS_DATE_FORMAT);
-        TransactionType txnType = TransactionType.valueOf(txnTypeStr.toUpperCase());
+        BigDecimal amount   = new BigDecimal(amountStr);
+        LocalDate valueDate = LocalDate.parse(valueDateStr, RTGS_DATE_FORMAT);
 
         // RTGS minimum amount rule — Rs. 2,00,000 for INR
         if ("INR".equalsIgnoreCase(currency) && amount.compareTo(new BigDecimal("200000")) < 0) {
@@ -151,13 +197,14 @@ public class RtgsAdapter implements TransactionAdapter {
             );
         }
 
-        // ---- Build normalizedPayload — includes fromBank and toBank ----
+        // ---- Build normalizedPayload ----
         String normalizedPayload = buildNormalizedPayload(
             sourceRef, txnType, amount, currency, valueDate,
             senderAcct, receiverAcct,
             senderIFSC, receiverIFSC, priority,
             rbiRefNo, purpose, submittedAt, batchWindow,
-            senderBank, receiverBank
+            senderBank, receiverBank,
+            originalTxnRef, reversalReason
         );
 
         // ---- Build IncomingTransaction ----
@@ -186,7 +233,6 @@ public class RtgsAdapter implements TransactionAdapter {
     /**
      * Extracts text between <tagName> and </tagName>.
      * Pure Core Java — no XML library needed.
-     * Example: extractXmlTag("<Amount>5000000.00</Amount>", "Amount") → "5000000.00"
      */
     private String extractXmlTag(String xml, String tagName) {
         String openTag  = "<" + tagName + ">";
@@ -207,7 +253,8 @@ public class RtgsAdapter implements TransactionAdapter {
                                           String priority, String rbiRefNo,
                                           String purpose, String submittedAt,
                                           String batchWindow,
-                                          String fromBank, String toBank) {
+                                          String fromBank, String toBank,
+                                          String originalTxnRef, String reversalReason) {
         return "{"
             + "\"source\":\"RTGS\","
             + "\"sourceRef\":\"" + sourceRef + "\","
@@ -225,7 +272,9 @@ public class RtgsAdapter implements TransactionAdapter {
             + "\"rbiRefNo\":\"" + nullSafe(rbiRefNo) + "\","
             + "\"purpose\":\"" + nullSafe(purpose) + "\","
             + "\"submittedAt\":\"" + nullSafe(submittedAt) + "\","
-            + "\"batchWindow\":\"" + nullSafe(batchWindow) + "\""
+            + "\"batchWindow\":\"" + nullSafe(batchWindow) + "\","
+            + "\"originalTxnRef\":\"" + originalTxnRef + "\","
+            + "\"reversalReason\":\"" + reversalReason + "\""
             + "}";
     }
 

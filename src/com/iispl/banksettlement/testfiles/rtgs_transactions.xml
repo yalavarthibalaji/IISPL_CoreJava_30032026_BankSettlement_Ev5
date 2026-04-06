@@ -4,7 +4,10 @@
 <!-- Minimum amount: Rs. 2,00,000 for INR -->
 <!-- SenderBank = bank that owns SenderAcct (fromBank) -->
 <!-- ReceiverBank = bank that owns ReceiverAcct (toBank) -->
+<!-- TxnType values: CREDIT, DEBIT, INTRABANK, REVERSAL -->
 <RTGSBatch>
+
+    <!-- ======================== CREDIT transactions ======================== -->
 
     <RTGSMessage>
         <MsgId>RTGS20260402001234</MsgId>
@@ -23,6 +26,8 @@
         <BatchWindow>W1</BatchWindow>
         <SenderBank>SBI Bank</SenderBank>
         <ReceiverBank>HDFC Bank</ReceiverBank>
+        <OriginalTxnRef></OriginalTxnRef>
+        <ReversalReason></ReversalReason>
     </RTGSMessage>
 
     <RTGSMessage>
@@ -42,6 +47,8 @@
         <BatchWindow>W1</BatchWindow>
         <SenderBank>ICICI Bank</SenderBank>
         <ReceiverBank>Axis Bank</ReceiverBank>
+        <OriginalTxnRef></OriginalTxnRef>
+        <ReversalReason></ReversalReason>
     </RTGSMessage>
 
     <RTGSMessage>
@@ -61,6 +68,77 @@
         <BatchWindow>W2</BatchWindow>
         <SenderBank>HDFC Bank</SenderBank>
         <ReceiverBank>SBI Bank</ReceiverBank>
+        <OriginalTxnRef></OriginalTxnRef>
+        <ReversalReason></ReversalReason>
+    </RTGSMessage>
+
+    <!-- ======================== INTRABANK (InterBank) transactions ======================== -->
+    <!-- INTRABANK = transfer between two different banks settled via RTGS rail -->
+
+    <RTGSMessage>
+        <MsgId>RTGS20260404001237</MsgId>
+        <SenderIFSC>KOTAK0001234</SenderIFSC>
+        <ReceiverIFSC>PUNB0005678</ReceiverIFSC>
+        <SenderAcct>RTGS-ACC-DR-004</SenderAcct>
+        <ReceiverAcct>RTGS-ACC-CR-004</ReceiverAcct>
+        <Amount>7500000.00</Amount>
+        <Currency>INR</Currency>
+        <ValueDate>2026-04-04</ValueDate>
+        <TxnType>INTRABANK</TxnType>
+        <Priority>HIGH</Priority>
+        <RBIRefNo>RBI20260404DDD</RBIRefNo>
+        <Purpose>INTERBANK_SETTLEMENT</Purpose>
+        <SubmittedAt>2026-04-04T10:00:00</SubmittedAt>
+        <BatchWindow>W1</BatchWindow>
+        <SenderBank>Kotak Bank</SenderBank>
+        <ReceiverBank>Punjab National Bank</ReceiverBank>
+        <OriginalTxnRef></OriginalTxnRef>
+        <ReversalReason></ReversalReason>
+    </RTGSMessage>
+
+    <RTGSMessage>
+        <MsgId>RTGS20260404001238</MsgId>
+        <SenderIFSC>AXIS0003456</SenderIFSC>
+        <ReceiverIFSC>ICIC0002345</ReceiverIFSC>
+        <SenderAcct>RTGS-ACC-DR-005</SenderAcct>
+        <ReceiverAcct>RTGS-ACC-CR-005</ReceiverAcct>
+        <Amount>3000000.00</Amount>
+        <Currency>INR</Currency>
+        <ValueDate>2026-04-04</ValueDate>
+        <TxnType>INTRABANK</TxnType>
+        <Priority>NORMAL</Priority>
+        <RBIRefNo>RBI20260404EEE</RBIRefNo>
+        <Purpose>INTERBANK_SETTLEMENT</Purpose>
+        <SubmittedAt>2026-04-04T11:30:00</SubmittedAt>
+        <BatchWindow>W1</BatchWindow>
+        <SenderBank>Axis Bank</SenderBank>
+        <ReceiverBank>ICICI Bank</ReceiverBank>
+        <OriginalTxnRef></OriginalTxnRef>
+        <ReversalReason></ReversalReason>
+    </RTGSMessage>
+
+    <!-- ======================== REVERSAL transaction ======================== -->
+    <!-- Reversing RTGS20260402001235 (property purchase — wrong receiver account) -->
+
+    <RTGSMessage>
+        <MsgId>RTGS20260406001239</MsgId>
+        <SenderIFSC>AXIS0003456</SenderIFSC>
+        <ReceiverIFSC>ICIC0002345</ReceiverIFSC>
+        <SenderAcct>RTGS-ACC-CR-002</SenderAcct>
+        <ReceiverAcct>RTGS-ACC-DR-002</ReceiverAcct>
+        <Amount>2500000.00</Amount>
+        <Currency>INR</Currency>
+        <ValueDate>2026-04-06</ValueDate>
+        <TxnType>REVERSAL</TxnType>
+        <Priority>HIGH</Priority>
+        <RBIRefNo>RBI20260406FFF</RBIRefNo>
+        <Purpose>REVERSAL</Purpose>
+        <SubmittedAt>2026-04-06T09:00:00</SubmittedAt>
+        <BatchWindow>W1</BatchWindow>
+        <SenderBank>Axis Bank</SenderBank>
+        <ReceiverBank>ICICI Bank</ReceiverBank>
+        <OriginalTxnRef>RTGS20260402001235</OriginalTxnRef>
+        <ReversalReason>WRONG_RECEIVER_ACCOUNT</ReversalReason>
     </RTGSMessage>
 
 </RTGSBatch>
