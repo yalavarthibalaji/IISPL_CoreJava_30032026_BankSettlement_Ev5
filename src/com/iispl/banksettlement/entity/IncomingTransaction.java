@@ -11,76 +11,56 @@ import java.time.LocalDateTime;
  * IncomingTransaction — The CANONICAL (standardised) form of every transaction,
  * regardless of which source system it came from.
  *
- * WHY THIS EXISTS:
- *   CBS sends pipe-delimited flat files, RTGS sends XML over MQ,
- *   NEFT sends fixed-width batch files, UPI sends JSON webhooks,
- *   Fintech sends proprietary JSON — each format is completely different.
- *   The adapter classes convert each raw format into this single standard class.
- *   After adaptation, all downstream processing works only with IncomingTransaction.
- *
  * FLOW:
  *   Raw Payload → Adapter → IncomingTransaction → BlockingQueue → Settlement Engine
  *
  * HAS-A relationship: contains a SourceSystem object to know its origin.
  * Extends BaseEntity: inherits id, createdAt, updatedAt, createdBy, version.
  *
- * DESIGN DECISIONS (v2):
+ * CHANGE LOG (v3 — fromBank / toBank added):
  *
- *   1. debitAccountNumber / creditAccountNumber REMOVED:
- *      Account numbers are embedded inside normalizedPayload JSON as
- *      "debitAccount" and "creditAccount" keys. The settlement engine
- *      will parse them from there when building Transaction sub-objects.
- *      Keeping them only in normalizedPayload avoids duplication and
- *      makes IncomingTransaction a clean transport object.
+ *   fromBank and toBank are now stored as BOTH:
+ *     1. Separate fields on IncomingTransaction (for easy access in Java code)
+ *     2. Inside normalizedPayload JSON as "fromBank" and "toBank" keys
+ *        (for the settlement engine and audit trail)
  *
- *   2. failureReason REMOVED:
- *      Validation has moved to the settlement phase. The ingestion phase
- *      no longer fails transactions — it only receives, adapts, and queues.
- *      Any failure reason will be stored in SettlementRecord.failureReason
- *      at the settlement layer.
+ *   WHY BOTH?
+ *     Having them as fields lets IngestionWorker log and validate them
+ *     without parsing JSON. Having them in normalizedPayload ensures the
+ *     settlement engine (T3) can read them from the single JSON blob it
+ *     already parses to build CreditTransaction / DebitTransaction objects.
  *
- *   3. requiresAccountValidation REMOVED:
- *      No validation happens during ingestion now (see point 2).
- *      UPI VPA handling is documented in UpiAdapter and will be handled
- *      by the settlement engine when it reads the normalizedPayload.
+ *   fromBank — the bank that owns the DEBIT account (sending side).
+ *              e.g. "HDFC Bank", "ICICI Bank", "SBI Bank"
+ *   toBank   — the bank that owns the CREDIT account (receiving side).
+ *              e.g. "SBI Bank", "Axis Bank", "Kotak Bank"
  *
- *   4. currency REMOVED:
- *      All transactions in this system are in INR (Indian Rupee).
- *      Currency is not stored as a separate field. If any adapter
- *      historically set a currency field, that information may still
- *      appear inside the normalizedPayload JSON for audit purposes.
- *
- * NOTE ON SWIFT:
- *   SWIFT (cross-border) has been removed as a source system. This system
- *   now handles Indian domestic bank accounts only.
+ *   Each adapter hardcodes these values from the raw payload fields
+ *   (e.g. from IFSC codes, VPA handles, or explicit bank name fields).
  */
 public class IncomingTransaction extends BaseEntity {
+
+    private static final long serialVersionUID = 1L;
 
     // Unique identifier for this incoming transaction record
     private Long incomingTxnId;
 
     // HAS-A: which source system sent this transaction
-    // (CBS, RTGS, NEFT, UPI, FINTECH)
     private SourceSystem sourceSystem;
 
     // The original reference number from the source system
-    // CBS  → CBS_TXN_ID,  RTGS → MsgId
-    // NEFT → NEFT_REF,    UPI  → upiTxnId,  Fintech → ft_ref
     private String sourceRef;
 
     // The raw original payload as received — stored for audit/replay purposes
-    // CBS=pipe-delimited, RTGS=XML, NEFT=fixed-width, UPI=JSON, Fintech=JSON
     private String rawPayload;
 
     // What kind of transaction is this? (CREDIT, DEBIT, REVERSAL etc.)
     private TransactionType txnType;
 
-    // Transaction amount — using BigDecimal because financial amounts
-    // must NEVER use double or float (precision loss causes money errors!)
+    // Transaction amount — NEVER use double or float for financial amounts
     private BigDecimal amount;
 
     // The date on which this transaction should be settled/valued
-    // All adapters normalise their date formats to LocalDate (dd-MM-yyyy internally)
     private LocalDate valueDate;
 
     // Current processing stage of this transaction in the pipeline
@@ -92,20 +72,33 @@ public class IncomingTransaction extends BaseEntity {
     // The cleaned/standardised payload after adapter processing.
     // Always JSON format regardless of original source format.
     //
-    // IMPORTANT: account numbers are stored HERE, not as separate fields.
-    // Keys in this JSON:
-    //   "debitAccount"  — the sending/debiting account number (or VPA for UPI)
-    //   "creditAccount" — the receiving/crediting account number (or VPA for UPI)
-    //   "source"        — source system name
-    //   "sourceRef"     — original reference
+    // Keys in this JSON (all adapters must populate these):
+    //   "source"        — source system name (CBS, RTGS, NEFT, UPI, FINTECH)
+    //   "sourceRef"     — original reference number
     //   "txnType"       — transaction type
-    //   "amount"        — amount as number
+    //   "amount"        — transaction amount
+    //   "currency"      — always INR for this system
     //   "valueDate"     — settlement date
+    //   "debitAccount"  — sending/debiting account number (or VPA for UPI)
+    //   "creditAccount" — receiving/crediting account number (or VPA for UPI)
+    //   "fromBank"      — name of bank owning the debit account  ← NEW (v3)
+    //   "toBank"        — name of bank owning the credit account ← NEW (v3)
     //   + all source-specific extra fields (NARRATION, RBIRefNo, IFSC codes etc.)
-    //
-    // The settlement engine reads debitAccount and creditAccount from here
-    // to look up Account records and build CreditTransaction / DebitTransaction.
     private String normalizedPayload;
+
+    // -----------------------------------------------------------------------
+    // NEW FIELDS (v3) — fromBank and toBank
+    // -----------------------------------------------------------------------
+
+    // Name of the bank that owns the DEBIT (sending) account.
+    // Examples: "HDFC Bank", "ICICI Bank", "SBI Bank", "Axis Bank", "Kotak Bank"
+    // Source: hardcoded from raw payload fields in each adapter.
+    private String fromBank;
+
+    // Name of the bank that owns the CREDIT (receiving) account.
+    // Examples: "SBI Bank", "Axis Bank", "HDFC Bank", "Kotak Bank"
+    // Source: hardcoded from raw payload fields in each adapter.
+    private String toBank;
 
     // -----------------------------------------------------------------------
     // Constructors
@@ -113,7 +106,6 @@ public class IncomingTransaction extends BaseEntity {
 
     /**
      * Default constructor.
-     * Sets processingStatus to RECEIVED and ingestTimestamp to now.
      */
     public IncomingTransaction() {
         super();
@@ -122,10 +114,10 @@ public class IncomingTransaction extends BaseEntity {
     }
 
     /**
-     * Parameterized constructor — used by adapter classes to build
-     * a fully populated IncomingTransaction from a raw payload.
+     * Parameterized constructor — used by adapter classes.
      *
-     * NOTE: currency parameter has been removed. All transactions are INR.
+     * NOTE: fromBank and toBank are set separately using setFromBank() / setToBank()
+     * after calling this constructor, because each adapter extracts them differently.
      *
      * @param sourceSystem      The source system that sent this transaction
      * @param sourceRef         Original reference from the source system
@@ -133,23 +125,22 @@ public class IncomingTransaction extends BaseEntity {
      * @param txnType           Type of transaction (CREDIT/DEBIT etc.)
      * @param amount            Transaction amount (BigDecimal — no float/double!)
      * @param valueDate         Settlement value date
-     * @param normalizedPayload Cleaned JSON payload after normalisation
-     *                          (must contain "debitAccount" and "creditAccount" keys)
+     * @param normalizedPayload Cleaned JSON payload (must contain fromBank and toBank keys)
      */
     public IncomingTransaction(SourceSystem sourceSystem, String sourceRef,
                                String rawPayload, TransactionType txnType,
                                BigDecimal amount, LocalDate valueDate,
                                String normalizedPayload) {
         super();
-        this.sourceSystem     = sourceSystem;
-        this.sourceRef        = sourceRef;
-        this.rawPayload       = rawPayload;
-        this.txnType          = txnType;
-        this.amount           = amount;
-        this.valueDate        = valueDate;
+        this.sourceSystem      = sourceSystem;
+        this.sourceRef         = sourceRef;
+        this.rawPayload        = rawPayload;
+        this.txnType           = txnType;
+        this.amount            = amount;
+        this.valueDate         = valueDate;
         this.normalizedPayload = normalizedPayload;
-        this.processingStatus = ProcessingStatus.RECEIVED;
-        this.ingestTimestamp  = LocalDateTime.now();
+        this.processingStatus  = ProcessingStatus.RECEIVED;
+        this.ingestTimestamp   = LocalDateTime.now();
     }
 
     // -----------------------------------------------------------------------
@@ -237,6 +228,26 @@ public class IncomingTransaction extends BaseEntity {
     }
 
     // -----------------------------------------------------------------------
+    // NEW getters/setters (v3) — fromBank and toBank
+    // -----------------------------------------------------------------------
+
+    public String getFromBank() {
+        return fromBank;
+    }
+
+    public void setFromBank(String fromBank) {
+        this.fromBank = fromBank;
+    }
+
+    public String getToBank() {
+        return toBank;
+    }
+
+    public void setToBank(String toBank) {
+        this.toBank = toBank;
+    }
+
+    // -----------------------------------------------------------------------
     // toString
     // -----------------------------------------------------------------------
 
@@ -249,6 +260,8 @@ public class IncomingTransaction extends BaseEntity {
                ", txnType=" + txnType +
                ", amount=" + amount +
                ", valueDate=" + valueDate +
+               ", fromBank='" + fromBank + '\'' +
+               ", toBank='" + toBank + '\'' +
                ", processingStatus=" + processingStatus +
                ", ingestTimestamp=" + ingestTimestamp +
                '}';
