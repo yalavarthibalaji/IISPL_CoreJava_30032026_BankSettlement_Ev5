@@ -27,117 +27,108 @@ import java.sql.SQLException;
  */
 public class AccountDaoImpl implements AccountDao {
 
-    // -----------------------------------------------------------------------
-    // SQL CONSTANTS
-    // -----------------------------------------------------------------------
+	@Override
+	public Account findByAccountNumber(String accountNumber) {
 
-    // FIX: Changed "id" → "account_id" to match the actual Supabase schema
-    private static final String SQL_FIND_BY_ACCOUNT_NUMBER = "SELECT account_id, account_number, account_type, balance, currency, "
-            + "customer_id, bank_id, status, created_by, version " + "FROM account " + "WHERE account_number = ?";
+		// FIX: Changed "id" → "account_id" to match the actual Supabase schema
+		String SQL_FIND_BY_ACCOUNT_NUMBER = "SELECT account_id, account_number, account_type, balance, currency, "
+				+ "customer_id, bank_id, status, created_by, version " + "FROM account " + "WHERE account_number = ?";
 
-    private static final String SQL_IS_ACTIVE = "SELECT COUNT(*) FROM account "
-            + "WHERE account_number = ? AND status = 'ACTIVE'";
+		Connection conn = null;
+		PreparedStatement ps = null;
+		ResultSet rs = null;
 
-    // -----------------------------------------------------------------------
-    // findByAccountNumber()
-    // -----------------------------------------------------------------------
+		try {
+			conn = ConnectionPool.getConnection();
+			ps = conn.prepareStatement(SQL_FIND_BY_ACCOUNT_NUMBER);
+			ps.setString(1, accountNumber);
+			rs = ps.executeQuery();
 
-    @Override
-    public Account findByAccountNumber(String accountNumber) {
+			if (rs.next()) {
+				return mapRow(rs);
+			}
 
-        Connection conn = null;
-        PreparedStatement ps = null;
-        ResultSet rs = null;
+			return null;
 
-        try {
-            conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_FIND_BY_ACCOUNT_NUMBER);
-            ps.setString(1, accountNumber);
-            rs = ps.executeQuery();
+		} catch (SQLException e) {
+			throw new RuntimeException("AccountDaoImpl.findByAccountNumber() failed: " + e.getMessage(), e);
+		} finally {
+			closeResources(rs, ps, conn);
+		}
+	}
 
-            if (rs.next()) {
-                return mapRow(rs);
-            }
+	// -----------------------------------------------------------------------
+	// isAccountActiveByNumber()
+	// -----------------------------------------------------------------------
 
-            return null;
+	@Override
+	public boolean isAccountActiveByNumber(String accountNumber) {
 
-        } catch (SQLException e) {
-            throw new RuntimeException("AccountDaoImpl.findByAccountNumber() failed: " + e.getMessage(), e);
-        } finally {
-            closeResources(rs, ps, conn);
-        }
-    }
+		String SQL_IS_ACTIVE = "SELECT COUNT(*) FROM account " + "WHERE account_number = ? AND status = 'ACTIVE'";
 
-    // -----------------------------------------------------------------------
-    // isAccountActiveByNumber()
-    // -----------------------------------------------------------------------
+		Connection conn = null;
+		PreparedStatement ps = null;
+		ResultSet rs = null;
 
-    @Override
-    public boolean isAccountActiveByNumber(String accountNumber) {
+		try {
+			conn = ConnectionPool.getConnection();
+			ps = conn.prepareStatement(SQL_IS_ACTIVE);
+			ps.setString(1, accountNumber);
+			rs = ps.executeQuery();
 
-        Connection conn = null;
-        PreparedStatement ps = null;
-        ResultSet rs = null;
+			if (rs.next()) {
+				return rs.getInt(1) > 0;
+			}
 
-        try {
-            conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_IS_ACTIVE);
-            ps.setString(1, accountNumber);
-            rs = ps.executeQuery();
+			return false;
 
-            if (rs.next()) {
-                return rs.getInt(1) > 0;
-            }
+		} catch (SQLException e) {
+			throw new RuntimeException("AccountDaoImpl.isAccountActiveByNumber() failed: " + e.getMessage(), e);
+		} finally {
+			closeResources(rs, ps, conn);
+		}
+	}
 
-            return false;
+	// -----------------------------------------------------------------------
+	// Private helper — map one ResultSet row to Account object
+	// -----------------------------------------------------------------------
 
-        } catch (SQLException e) {
-            throw new RuntimeException("AccountDaoImpl.isAccountActiveByNumber() failed: " + e.getMessage(), e);
-        } finally {
-            closeResources(rs, ps, conn);
-        }
-    }
+	private Account mapRow(ResultSet rs) throws SQLException {
+		Account acc = new Account();
+		// FIX: Changed rs.getLong("id") → rs.getLong("account_id") to match actual
+		// schema
+		acc.setId(rs.getLong("account_id"));
+		acc.setAccountNumber(rs.getString("account_number"));
+		acc.setAccountType(AccountType.valueOf(rs.getString("account_type")));
+		acc.setBalance(rs.getBigDecimal("balance"));
+		acc.setCurrency(rs.getString("currency"));
+		acc.setCustomerId(rs.getLong("customer_id"));
+		acc.setBankId(rs.getLong("bank_id"));
+		acc.setStatus(AccountStatus.valueOf(rs.getString("status")));
+		acc.setCreatedBy(rs.getString("created_by"));
+		acc.setVersion(rs.getInt("version"));
+		return acc;
+	}
 
-    // -----------------------------------------------------------------------
-    // Private helper — map one ResultSet row to Account object
-    // -----------------------------------------------------------------------
+	// -----------------------------------------------------------------------
+	// Private helpers — close JDBC resources safely
+	// -----------------------------------------------------------------------
 
-    private Account mapRow(ResultSet rs) throws SQLException {
-        Account acc = new Account();
-        // FIX: Changed rs.getLong("id") → rs.getLong("account_id") to match actual
-        // schema
-        acc.setId(rs.getLong("account_id"));
-        acc.setAccountNumber(rs.getString("account_number"));
-        acc.setAccountType(AccountType.valueOf(rs.getString("account_type")));
-        acc.setBalance(rs.getBigDecimal("balance"));
-        acc.setCurrency(rs.getString("currency"));
-        acc.setCustomerId(rs.getLong("customer_id"));
-        acc.setBankId(rs.getLong("bank_id"));
-        acc.setStatus(AccountStatus.valueOf(rs.getString("status")));
-        acc.setCreatedBy(rs.getString("created_by"));
-        acc.setVersion(rs.getInt("version"));
-        return acc;
-    }
-
-    // -----------------------------------------------------------------------
-    // Private helpers — close JDBC resources safely
-    // -----------------------------------------------------------------------
-
-    private void closeResources(ResultSet rs, PreparedStatement ps, Connection conn) {
-        try {
-            if (rs != null)
-                rs.close();
-        } catch (SQLException ignored) {
-        }
-        try {
-            if (ps != null)
-                ps.close();
-        } catch (SQLException ignored) {
-        }
-        try {
-            if (conn != null)
-                conn.close();
-        } catch (SQLException ignored) {
-        }
-    }
+	private void closeResources(ResultSet rs, PreparedStatement ps, Connection conn) {
+		try {
+			if (rs != null)
+				rs.close();
+		} catch (SQLException ignored) {
+		}
+		try {
+			if (ps != null)
+				ps.close();
+		} catch (SQLException ignored) {
+		}
+		try {
+			if (conn != null)
+				conn.close();
+		} catch (SQLException ignored) {
+		}
+	}
 }

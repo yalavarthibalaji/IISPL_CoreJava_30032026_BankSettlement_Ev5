@@ -19,7 +19,6 @@ import java.util.List;
  *
  *
  * 
- * 
  * RULE: This interface only declares WHAT to do.
  * 
  * 
