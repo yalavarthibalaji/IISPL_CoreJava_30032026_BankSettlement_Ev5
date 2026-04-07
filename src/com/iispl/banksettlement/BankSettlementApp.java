@@ -30,6 +30,9 @@ import java.util.Scanner;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * BankSettlementApp — Main UI (console menu) for the Bank Settlement System.
  *
@@ -42,6 +45,8 @@ import java.util.concurrent.LinkedBlockingQueue;
  * PACKAGE: com.iispl.banksettlement
  */
 public class BankSettlementApp {
+
+  
 
     // Path to test files — same as FileIngestionTest
     private static final String FILE_BASE_PATH =
