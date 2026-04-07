@@ -1,6 +1,6 @@
 package com.iispl.banksettlement;
 
-import com.iispl.banksettlement.service.SettlementEngine;
+import com.iispl.banksettlement.service.impl.SettlementEngineImpl;
 import com.iispl.connectionpool.ConnectionPool;
 
 /**
@@ -69,8 +69,13 @@ public class SettlementEngineTest {
 
 		try {
 
+<<<<<<< Updated upstream
 			SettlementEngine engine = new SettlementEngine();
 			engine.runSettlement();
+=======
+            SettlementEngineImpl engine = new SettlementEngineImpl();
+            engine.runSettlement();
+>>>>>>> Stashed changes
 
 			System.out.println("\n================================================");
 			System.out.println("  SETTLEMENT ENGINE TEST — COMPLETE");
