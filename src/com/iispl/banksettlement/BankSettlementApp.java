@@ -1,26 +1,19 @@
 package com.iispl.banksettlement;
 
-import com.iispl.banksettlement.dao.AccountDao;
-import com.iispl.banksettlement.dao.CustomerDao;
-import com.iispl.banksettlement.dao.IncomingTransactionDao;
-import com.iispl.banksettlement.dao.SettlementBatchDao;
-import com.iispl.banksettlement.dao.impl.AccountDaoImpl;
-import com.iispl.banksettlement.dao.impl.CustomerDaoImpl;
-import com.iispl.banksettlement.dao.impl.IncomingTransactionDaoImpl;
-import com.iispl.banksettlement.dao.impl.SettlementBatchDaoImpl;
-import com.iispl.banksettlement.entity.Account;
-import com.iispl.banksettlement.entity.Customer;
-import com.iispl.banksettlement.entity.IncomingTransaction;
-import com.iispl.banksettlement.entity.SettlementBatch;
-import com.iispl.banksettlement.entity.SettlementRecord;
-import com.iispl.banksettlement.enums.ProcessingStatus;
-import com.iispl.banksettlement.service.SettlementEngine;
+import com.iispl.banksettlement.entity.NettingResult;
+import com.iispl.banksettlement.enums.SourceType;
+import com.iispl.banksettlement.service.impl.NettingServiceImpl;
+import com.iispl.banksettlement.service.impl.SettlementEngineImpl;
 import com.iispl.banksettlement.threading.IngestionPipeline;
 import com.iispl.banksettlement.threading.TransactionDispatcher;
-import com.iispl.banksettlement.enums.SourceType;
+import com.iispl.banksettlement.dao.IncomingTransactionDao;
+import com.iispl.banksettlement.dao.impl.IncomingTransactionDaoImpl;
+import com.iispl.banksettlement.entity.IncomingTransaction;
+import com.iispl.banksettlement.enums.ProcessingStatus;
 import com.iispl.banksettlement.utility.CsvFileReader;
 import com.iispl.banksettlement.utility.JsonFileReader;
 import com.iispl.banksettlement.utility.TxtFileReader;
+import com.iispl.banksettlement.utility.XlsxFileReader;
 import com.iispl.banksettlement.utility.XmlFileReader;
 import com.iispl.connectionpool.ConnectionPool;
 
@@ -30,380 +23,280 @@ import java.util.Scanner;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 /**
- * BankSettlementApp — Main UI (console menu) for the Bank Settlement System.
+ * BankSettlementApp — Main entry point for the Bank Settlement System.
  *
- * WHY NOT calling FileIngestionTest.main() / SettlementEngineTest.main() directly?
- *   Because those classes call ConnectionPool.shutdown() inside them.
- *   If we call them from here, the pool closes and options 4-7 (query menu)
- *   will crash with "pool is closed" error.
- *   So we copy only the CORE logic here, without the shutdown call.
+ * This is a simple do-while menu that lets you run each step of the
+ * settlement pipeline one at a time.
+ *
+ * MENU OPTIONS:
+ * ─────────────────────────────────────────────────────────────────────────
+ * 1. Ingest transaction files
+ *    Reads all 5 test files (CBS CSV, RTGS XML, NEFT TXT, UPI JSON, Fintech JSON)
+ *    Runs the IngestionPipeline → each raw payload → adapter → IncomingTransaction → DB
+ *
+ * 2. Dispatch transactions (SettlementProcessor)
+ *    Loads all QUEUED records from DB
+ *    Runs TransactionDispatcher → parses normalizedPayload → saves to credit/debit tables
+ *
+ * 3. Run settlement engine
+ *    Loads all INITIATED credit/debit/interbank/reversal rows from DB
+ *    Runs SettlementEngineImpl → settles each transaction, creates SettlementBatch records
+ *
+ * 4. Run netting (post-settlement)
+ *    Reads all PROCESSED incoming_transaction rows
+ *    Computes inter-bank bilateral net positions
+ *    Prints: "Bank A → MUST PAY → Rs. X → to → Bank B"
+ *    NPCI updates each bank's settlement account balance
+ *
+ * 5. Run full pipeline (steps 1 + 2 + 3 + 4 in sequence)
+ *
+ * 0. Exit
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ * HOW TO RUN:
+ *   Right-click → Run As → Java Application
+ *   Use the console to type option numbers.
  *
  * PACKAGE: com.iispl.banksettlement
  */
 public class BankSettlementApp {
 
-  
-
-    // Path to test files — same as FileIngestionTest
-    private static final String FILE_BASE_PATH =
-            "src/com/iispl/banksettlement/testfiles/";
-
-    private static final Scanner               scanner     = new Scanner(System.in);
-    private static final AccountDao            accountDao  = new AccountDaoImpl();
-    private static final CustomerDao           customerDao = new CustomerDaoImpl();
-    private static final IncomingTransactionDao incomingDao = new IncomingTransactionDaoImpl();
-    private static final SettlementBatchDao    batchDao    = new SettlementBatchDaoImpl();
-
-    // -----------------------------------------------------------------------
-    // MAIN
-    // -----------------------------------------------------------------------
+    // Path to test files — relative to project root in Eclipse
+    private static final String FILE_BASE_PATH = "src/com/iispl/banksettlement/testfiles/";
 
     public static void main(String[] args) {
 
-        System.out.println("=================================================");
-        System.out.println("   IISPL BANK SETTLEMENT APPLICATION  v5.0");
-        System.out.println("   CBS | RTGS | NEFT | UPI | FINTECH");
-        System.out.println("=================================================");
+        Scanner scanner = new Scanner(System.in);
+        int choice = 0;
 
-        boolean running = true;
-        while (running) {
+        System.out.println("╔══════════════════════════════════════════════╗");
+        System.out.println("║     BANK SETTLEMENT SYSTEM — MAIN MENU       ║");
+        System.out.println("╚══════════════════════════════════════════════╝");
+
+        do {
             printMenu();
-            String choice = scanner.nextLine().trim();
-            switch (choice) {
-                case "1": runFileIngestion();        break;
-                case "2": runDispatch();             break;
-                case "3": runSettlementEngine();     break;
-                case "4": viewIncomingTransactions();break;
-                case "5": viewSettlementBatch();     break;
-                case "6": checkAccount();            break;
-                case "7": checkCustomer();           break;
-                case "0": running = false;           break;
-                default:  System.out.println("  Invalid choice. Enter 0-7.");
-            }
-        }
 
-        // Close pool ONCE here at the very end when user exits
-        ConnectionPool.shutdown();
-        System.out.println("  Connection pool closed. Goodbye!");
+            System.out.print("Enter your choice: ");
+            String input = scanner.nextLine().trim();
+
+            // Validate input is a number
+            if (!input.matches("[0-9]+")) {
+                System.out.println("\n[App] Invalid input. Please enter a number.\n");
+                continue;
+            }
+
+            choice = Integer.parseInt(input);
+
+            switch (choice) {
+
+                case 1:
+                    runIngestion();
+                    break;
+
+                case 2:
+                    runDispatch();
+                    break;
+
+                case 3:
+                    runSettlement();
+                    break;
+
+                case 4:
+                    runNetting();
+                    break;
+
+                case 5:
+                    System.out.println("\n[App] Running FULL PIPELINE (Ingest → Dispatch → Settle → Net)...\n");
+                    runIngestion();
+                    runDispatch();
+                    runSettlement();
+                    runNetting();
+                    System.out.println("\n[App] Full pipeline complete.\n");
+                    break;
+
+                case 0:
+                    System.out.println("\n[App] Exiting. Closing connection pool...");
+                    ConnectionPool.shutdown();
+                    System.out.println("[App] Goodbye!");
+                    break;
+
+                default:
+                    System.out.println("\n[App] Unknown option. Please choose 0-5.\n");
+            }
+
+        } while (choice != 0);
+
         scanner.close();
     }
 
     // -----------------------------------------------------------------------
-    // MENU
+    // Print menu
     // -----------------------------------------------------------------------
 
     private static void printMenu() {
-        System.out.println();
-        System.out.println("  -------- MAIN MENU ----------------------------");
-        System.out.println("  PIPELINE (run in this order):");
-        System.out.println("   1. File Ingestion    (test files  -> incoming_transaction)");
-        System.out.println("   2. Dispatch          (incoming    -> credit/debit tables)");
-        System.out.println("   3. Settlement Engine (INITIATED   -> SETTLED)");
-        System.out.println("  QUERY:");
-        System.out.println("   4. View Incoming Transactions (filter by status)");
-        System.out.println("   5. View Settlement Batch + Records");
-        System.out.println("   6. Check Account");
-        System.out.println("   7. Check Customer KYC Status");
-        System.out.println("   0. Exit");
-        System.out.println("  -----------------------------------------------");
-        System.out.print("  Enter choice: ");
+        System.out.println("\n┌──────────────────────────────────────────────┐");
+        System.out.println("│  MENU                                        │");
+        System.out.println("│  1. Ingest transaction files                 │");
+        System.out.println("│  2. Dispatch transactions (SettlementProcessor)│");
+        System.out.println("│  3. Run settlement engine                    │");
+        System.out.println("│  4. Run netting (post-settlement)            │");
+        System.out.println("│  5. Run full pipeline (1+2+3+4)              │");
+        System.out.println("│  0. Exit                                     │");
+        System.out.println("└──────────────────────────────────────────────┘");
     }
 
     // -----------------------------------------------------------------------
-    // OPTION 1 — File Ingestion
-    //
-    // NOTE: We do NOT call FileIngestionTest.main() because it calls
-    //       pipeline.shutdown() which closes ConnectionPool.
-    //       Instead we replicate only the ingestion logic here.
+    // Step 1: Ingest transaction files
     // -----------------------------------------------------------------------
 
-    private static void runFileIngestion() {
-        System.out.println("\n  [Ingestion] Reading test files -> incoming_transaction...\n");
+    private static void runIngestion() {
+        System.out.println("\n================================================");
+        System.out.println("  STEP 1 — FILE INGESTION");
+        System.out.println("================================================\n");
 
-        // Create a fresh pipeline (does NOT close ConnectionPool on its own)
-        IngestionPipeline pipeline = new IngestionPipeline();
+        try {
+            IngestionPipeline pipeline = new IngestionPipeline();
 
-        ingestFile(pipeline, SourceType.CBS,
-                FILE_BASE_PATH + "cbs_transactions.csv",    new CsvFileReader());
+            ingestFile(pipeline, SourceType.CBS,
+                    FILE_BASE_PATH + "cbs_transactions.csv",     new CsvFileReader());
 
-        ingestFile(pipeline, SourceType.RTGS,
-                FILE_BASE_PATH + "rtgs_transactions.xml",   new XmlFileReader());
+            ingestFile(pipeline, SourceType.RTGS,
+                    FILE_BASE_PATH + "rtgs_transactions.xml",    new XmlFileReader());
 
-        ingestFile(pipeline, SourceType.NEFT,
-                FILE_BASE_PATH + "neft_transactions.txt",   new TxtFileReader());
+            ingestFile(pipeline, SourceType.NEFT,
+                    FILE_BASE_PATH + "neft_transactions.txt",    new TxtFileReader());
 
-        ingestFile(pipeline, SourceType.UPI,
-                FILE_BASE_PATH + "upi_transactions.json",   new JsonFileReader("UPI_JSON"));
+            ingestFile(pipeline, SourceType.UPI,
+                    FILE_BASE_PATH + "upi_transactions.json",    new JsonFileReader("UPI_JSON"));
 
-        ingestFile(pipeline, SourceType.FINTECH,
-                FILE_BASE_PATH + "fintech_transactions.json", new JsonFileReader("FINTECH_JSON"));
+            ingestFile(pipeline, SourceType.FINTECH,
+                    FILE_BASE_PATH + "fintech_transactions.json", new JsonFileReader("FINTECH_JSON"));
 
-        System.out.println("\n  [Ingestion] Waiting for all workers to finish...");
+            System.out.println("\n[Ingestion] All files submitted. Waiting for workers...");
+            pipeline.shutdownExecutorOnly();
+            System.out.println("[Ingestion] Done. Check incoming_transaction table.\n");
 
-        // shutdownExecutorOnly() waits for workers but does NOT close ConnectionPool
-        pipeline.shutdownExecutorOnly();
-
-        System.out.println("  [Ingestion] Done. Check DB -> incoming_transaction table.");
+        } catch (Exception e) {
+            System.out.println("\n[Ingestion] ERROR: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
-    // Helper used by runFileIngestion()
-    private static void ingestFile(IngestionPipeline pipeline,
-                                   SourceType sourceType,
-                                   String filePath,
-                                   com.iispl.banksettlement.utility.TransactionFileReader reader) {
-        System.out.println("  Reading [" + reader.getSourceFormat() + "] from: " + filePath);
+    private static void ingestFile(IngestionPipeline pipeline, SourceType sourceType,
+                                   String filePath, com.iispl.banksettlement.utility.TransactionFileReader reader) {
+        System.out.println("\n--- Reading [" + reader.getSourceFormat() + "] from: " + filePath + " ---");
         List<String> payloads;
         try {
             payloads = reader.readLines(filePath);
         } catch (IOException e) {
-            System.out.println("  [ERROR] Cannot read file: " + filePath + " -> " + e.getMessage());
+            System.out.println("[Ingestion] ERROR reading file: " + filePath + " | " + e.getMessage());
             return;
         }
         if (payloads.isEmpty()) {
-            System.out.println("  [WARN] No records found in: " + filePath);
+            System.out.println("[Ingestion] WARNING — no records in: " + filePath);
             return;
         }
-        System.out.println("  Submitting " + payloads.size() + " record(s)...");
+        System.out.println("[Ingestion] Submitting " + payloads.size() + " record(s)...");
         for (String rawPayload : payloads) {
             pipeline.ingest(sourceType, rawPayload);
         }
     }
 
     // -----------------------------------------------------------------------
-    // OPTION 2 — Dispatch
-    //
-    // NOTE: We do NOT call SettlementProcessorTest.main() because its
-    //       runModeA() and runModeB() are private static — not accessible.
-    //       We replicate MODE_A logic here (load QUEUED from DB and dispatch).
+    // Step 2: Dispatch (SettlementProcessor MODE_A)
     // -----------------------------------------------------------------------
 
     private static void runDispatch() {
-        System.out.println("\n  [Dispatch] Loading QUEUED transactions and dispatching...\n");
+        System.out.println("\n================================================");
+        System.out.println("  STEP 2 — TRANSACTION DISPATCH");
+        System.out.println("================================================\n");
 
-        // Step 1: Load all QUEUED incoming transactions from DB
-        List<IncomingTransaction> queuedTxns = incomingDao.findByStatus(ProcessingStatus.QUEUED);
+        try {
+            IncomingTransactionDao incomingTxnDao = new IncomingTransactionDaoImpl();
+            List<IncomingTransaction> queuedTxns = incomingTxnDao.findByStatus(ProcessingStatus.QUEUED);
 
-        if (queuedTxns.isEmpty()) {
-            System.out.println("  [Dispatch] No QUEUED transactions found.");
-            System.out.println("  [Dispatch] Run option 1 (File Ingestion) first.");
-            return;
-        }
+            if (queuedTxns.isEmpty()) {
+                System.out.println("[Dispatch] No QUEUED transactions found. Run Ingestion first.");
+                return;
+            }
 
-        System.out.println("  [Dispatch] Found " + queuedTxns.size() + " QUEUED transaction(s).");
+            System.out.println("[Dispatch] Found " + queuedTxns.size() + " QUEUED transaction(s). Dispatching...\n");
 
-        // Step 2: Put them on a BlockingQueue
-        BlockingQueue<IncomingTransaction> queue = new LinkedBlockingQueue<>(500);
-        for (IncomingTransaction txn : queuedTxns) {
+            BlockingQueue<IncomingTransaction> queue = new LinkedBlockingQueue<>(500);
+
+            for (IncomingTransaction txn : queuedTxns) {
+                try {
+                    queue.put(txn);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.out.println("[Dispatch] Interrupted while queuing.");
+                    return;
+                }
+            }
+
+            // Put shutdown sentinel
+            IncomingTransaction sentinel = new IncomingTransaction();
+            sentinel.setSourceRef("SHUTDOWN");
             try {
-                queue.put(txn);
+                queue.put(sentinel);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                System.out.println("  [ERROR] Interrupted while queuing.");
-                return;
             }
-        }
 
-        // Step 3: Put shutdown sentinel so dispatcher knows when to stop
-        IncomingTransaction sentinel = new IncomingTransaction();
-        sentinel.setSourceRef("SHUTDOWN");
-        try {
-            queue.put(sentinel);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+            // Run dispatcher
+            TransactionDispatcher dispatcher = new TransactionDispatcher(queue);
+            Thread dispatcherThread = new Thread(dispatcher, "Dispatcher-Thread");
+            dispatcherThread.start();
+            try {
+                dispatcherThread.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
 
-        // Step 4: Start TransactionDispatcher in a background thread and wait for it
-        TransactionDispatcher dispatcher = new TransactionDispatcher(queue);
-        Thread dispatcherThread = new Thread(dispatcher, "DispatcherThread-1");
-        dispatcherThread.start();
-        try {
-            dispatcherThread.join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+            System.out.println("\n[Dispatch] Done. Check credit_transaction, debit_transaction tables.\n");
 
-        System.out.println("  [Dispatch] Done. Check DB -> credit/debit/interbank/reversal tables.");
+        } catch (Exception e) {
+            System.out.println("\n[Dispatch] ERROR: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     // -----------------------------------------------------------------------
-    // OPTION 3 — Settlement Engine
-    //
-    // NOTE: We do NOT call SettlementEngineTest.main() because it calls
-    //       ConnectionPool.shutdown() in its finally block.
-    //       We call SettlementEngine directly instead.
+    // Step 3: Settlement Engine
     // -----------------------------------------------------------------------
 
-    private static void runSettlementEngine() {
-        System.out.println("\n  [Settlement] Settling INITIATED transactions...\n");
+    private static void runSettlement() {
+        System.out.println("\n================================================");
+        System.out.println("  STEP 3 — SETTLEMENT ENGINE");
+        System.out.println("================================================\n");
+
         try {
-            SettlementEngine engine = new SettlementEngine();
+            SettlementEngineImpl engine = new SettlementEngineImpl();
             engine.runSettlement();
-            System.out.println("  [Settlement] Done. Check DB -> settlement_batch, settlement_record tables.");
+            System.out.println("\n[Settlement] Done. Check settlement_batch and settlement_record tables.\n");
         } catch (Exception e) {
-            System.out.println("  [ERROR] Settlement failed: " + e.getMessage());
+            System.out.println("\n[Settlement] ERROR: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     // -----------------------------------------------------------------------
-    // OPTION 4 — View Incoming Transactions by status
+    // Step 4: Netting
     // -----------------------------------------------------------------------
 
-    private static void viewIncomingTransactions() {
-        System.out.println("\n  1=RECEIVED  2=VALIDATED  3=QUEUED  4=PROCESSING");
-        System.out.println("  5=PROCESSED 6=FAILED     7=DEAD_LETTER");
-        System.out.print("  Choose status (1-7): ");
-
-        ProcessingStatus status;
-        switch (scanner.nextLine().trim()) {
-            case "1": status = ProcessingStatus.RECEIVED;    break;
-            case "2": status = ProcessingStatus.VALIDATED;   break;
-            case "3": status = ProcessingStatus.QUEUED;      break;
-            case "4": status = ProcessingStatus.PROCESSING;  break;
-            case "5": status = ProcessingStatus.PROCESSED;   break;
-            case "6": status = ProcessingStatus.FAILED;      break;
-            case "7": status = ProcessingStatus.DEAD_LETTER; break;
-            default:  System.out.println("  Invalid choice."); return;
-        }
+    private static void runNetting() {
+        System.out.println("\n================================================");
+        System.out.println("  STEP 4 — POST-SETTLEMENT NETTING");
+        System.out.println("================================================\n");
 
         try {
-            List<IncomingTransaction> list = incomingDao.findByStatus(status);
-            if (list.isEmpty()) {
-                System.out.println("  No transactions found with status: " + status);
-                return;
-            }
-            System.out.println();
-            // NOTE: IncomingTransaction does NOT have getCurrency().
-            //       Currency is stored inside normalizedPayload JSON only.
-            //       So we show sourceRef and txnType instead.
-            System.out.printf("  %-6s  %-20s  %-12s  %-12s  %-15s%n",
-                    "ID", "SOURCE REF", "TYPE", "AMOUNT", "STATUS");
-            System.out.println("  " + "-".repeat(72));
-            for (IncomingTransaction t : list) {
-                System.out.printf("  %-6s  %-20s  %-12s  %-12s  %-15s%n",
-                        t.getIncomingTxnId(),
-                        t.getSourceRef()    != null ? t.getSourceRef()                     : "-",
-                        t.getTxnType()      != null ? t.getTxnType().name()                : "-",
-                        t.getAmount()       != null ? t.getAmount().toPlainString()         : "-",
-                        t.getProcessingStatus() != null ? t.getProcessingStatus().name()   : "-");
-            }
-            System.out.println("  Total: " + list.size() + " record(s)");
+            NettingServiceImpl nettingService = new NettingServiceImpl();
+            List<NettingResult> results = nettingService.runNetting();
+            System.out.println("\n[Netting] Done. Total inter-bank obligations: " + results.size() + "\n");
         } catch (Exception e) {
-            System.out.println("  [ERROR] " + e.getMessage());
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // OPTION 5 — View Settlement Batch + its Records
-    // -----------------------------------------------------------------------
-
-    private static void viewSettlementBatch() {
-        System.out.println("\n  Example IDs: BATCH-CBS-20260407  BATCH-RTGS-20260407");
-        System.out.println("               BATCH-NEFT-20260407 BATCH-UPI-20260407  BATCH-FT-20260407");
-        System.out.print("  Enter Batch ID: ");
-        String batchId = scanner.nextLine().trim();
-
-        if (batchId.isEmpty()) { System.out.println("  Batch ID cannot be empty."); return; }
-
-        try {
-            SettlementBatch batch = batchDao.findBatchById(batchId);
-            if (batch == null) { System.out.println("  Batch not found: " + batchId); return; }
-
-            System.out.println();
-            System.out.println("  Batch ID     : " + batch.getBatchId());
-            System.out.println("  Date         : " + batch.getBatchDate());
-            System.out.println("  Status       : " + batch.getBatchStatus());
-            System.out.println("  Total Txns   : " + batch.getTotalTransactions());
-            System.out.println("  Total Amount : " + (batch.getTotalAmount() != null
-                                                       ? batch.getTotalAmount().toPlainString() : "-"));
-            System.out.println("  Run By       : " + batch.getRunBy());
-            System.out.println("  Run At       : " + batch.getRunAt());
-
-            List<SettlementRecord> records = batchDao.findRecordsByBatchId(batchId);
-            if (records.isEmpty()) {
-                System.out.println("  No settlement records found for this batch.");
-                return;
-            }
-            System.out.println();
-            System.out.printf("  %-10s  %-20s  %-14s  %-14s  %-12s%n",
-                    "REC ID", "BATCH ID", "INCOMING ID", "AMOUNT", "STATUS");
-            System.out.println("  " + "-".repeat(75));
-            for (SettlementRecord r : records) {
-                System.out.printf("  %-10s  %-20s  %-14s  %-14s  %-12s%n",
-                        r.getRecordId(),
-                        r.getBatchId(),
-                        r.getIncomingTxnId(),
-                        r.getSettledAmount() != null ? r.getSettledAmount().toPlainString() : "-",
-                        r.getSettledStatus() != null ? r.getSettledStatus().name()          : "-");
-            }
-            System.out.println("  Total records: " + records.size());
-        } catch (Exception e) {
-            System.out.println("  [ERROR] " + e.getMessage());
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // OPTION 6 — Check Account by account number
-    // -----------------------------------------------------------------------
-
-    private static void checkAccount() {
-        System.out.print("\n  Enter Account Number: ");
-        String accNo = scanner.nextLine().trim();
-        if (accNo.isEmpty()) { System.out.println("  Cannot be empty."); return; }
-
-        try {
-            Account acc = accountDao.findByAccountNumber(accNo);
-            if (acc == null) { System.out.println("  Account not found: " + accNo); return; }
-
-            System.out.println();
-            System.out.println("  Account Number : " + acc.getAccountNumber());
-            System.out.println("  Account Type   : " + acc.getAccountType());
-            System.out.println("  Balance        : " + (acc.getBalance() != null
-                                                         ? acc.getBalance().toPlainString() : "-"));
-            System.out.println("  Currency       : " + acc.getCurrency());
-            System.out.println("  Status         : " + acc.getStatus());
-            System.out.println("  Active?        : " + (accountDao.isAccountActiveByNumber(accNo)
-                                                         ? "YES" : "NO"));
-        } catch (Exception e) {
-            System.out.println("  [ERROR] " + e.getMessage());
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // OPTION 7 — Check Customer KYC by customer ID
-    // -----------------------------------------------------------------------
-
-    private static void checkCustomer() {
-        System.out.print("\n  Enter Customer ID (number): ");
-        String input = scanner.nextLine().trim();
-        if (input.isEmpty()) { System.out.println("  Cannot be empty."); return; }
-
-        long customerId;
-        try {
-            customerId = Long.parseLong(input);
-        } catch (NumberFormatException e) {
-            System.out.println("  Customer ID must be a number.");
-            return;
-        }
-
-        try {
-            Customer c = customerDao.findById(customerId);
-            if (c == null) { System.out.println("  Customer not found: " + customerId); return; }
-
-            System.out.println();
-            System.out.println("  Customer ID    : " + c.getId());
-            System.out.println("  Name           : " + c.getFirstName() + " " + c.getLastName());
-            System.out.println("  Email          : " + c.getEmail());
-            System.out.println("  KYC Status     : " + c.getKycStatus());
-            System.out.println("  KYC Verified?  : " + (customerDao.isCustomerKycVerified(customerId)
-                                                          ? "YES" : "NO"));
-            System.out.println("  Tier           : " + c.getCustomerTier());
-            System.out.println("  Onboarded On   : " + c.getOnboardingDate());
-        } catch (Exception e) {
-            System.out.println("  [ERROR] " + e.getMessage());
+            System.out.println("\n[Netting] ERROR: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 }
