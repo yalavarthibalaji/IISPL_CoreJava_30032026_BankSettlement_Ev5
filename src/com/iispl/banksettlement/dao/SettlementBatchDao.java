@@ -16,8 +16,6 @@ import java.util.List;
  * TABLES: settlement_batch — one row per channel per run (e.g.
  * BATCH-CBS-20260406) settlement_record — one row per transaction settled
  * inside a batch
- *
- * PACKAGE: com.iispl.banksettlement.dao
  */
 public interface SettlementBatchDao {
 

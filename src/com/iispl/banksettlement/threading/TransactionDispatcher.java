@@ -31,303 +31,292 @@ import java.util.concurrent.BlockingQueue;
  * TransactionDispatcher — Runnable that drains the BlockingQueue and dispatches
  * each IncomingTransaction to the correct Transaction subclass.
  *
- * ─────────────────────────────────────────────────────────────────────────
- * WHAT THIS CLASS DOES (step by step):
- * ─────────────────────────────────────────────────────────────────────────
+ * UPDATED: Now also sets fromBank, toBank, and incomingTxnId on every
+ * transaction subclass before saving to DB.
  *
- * STEP 1 — Take from BlockingQueue blockingQueue.take() — blocks until a QUEUED
- * IncomingTransaction arrives.
+ * HOW fromBank / toBank are set:
+ *   They are parsed from the normalizedPayload JSON of each IncomingTransaction.
+ *   All adapters (CBS, RTGS, NEFT, UPI, Fintech) already put "fromBank" and
+ *   "toBank" as keys inside normalizedPayload. The dispatcher just reads them.
  *
- * STEP 2 — Parse normalizedPayload (JSON) Extract: debitAccount, creditAccount,
- * amount, currency, valueDate, txnType, originalTxnRef, reversalReason,
- * senderIFSC (for INTRABANK correspondentBankCode)
- *
- * STEP 3 — Look up account IDs from account table
- * AccountDao.findByAccountNumber(debitAccount) → debitAccountId (Long)
- * AccountDao.findByAccountNumber(creditAccount) → creditAccountId (Long) If
- * either account is not found → log error, mark FAILED, skip. UPI uses VPA
- * handles (not real account numbers) — account lookup skipped, IDs set to 0L as
- * placeholder.
- *
- * STEP 4 — Route by txnType and build the correct subclass object CREDIT → new
- * CreditTransaction(...) → CreditTransactionDao.save() DEBIT → new
- * DebitTransaction(...) → DebitTransactionDao.save() REVERSAL → new
- * ReversalTransaction(...) → ReversalTransactionDao.save() INTRABANK → new
- * InterBankTransaction(...) → InterBankTransactionDao.save() OTHER → log and
- * mark FAILED
- *
- * STEP 5 — Update incoming_transaction status to PROCESSED
- * IncomingTransactionDao.updateStatus(id, PROCESSED) On any error → mark as
- * FAILED instead.
- *
- * ─────────────────────────────────────────────────────────────────────────
- * NOTE ON TABLE DESIGN: The four transaction tables (credit_transaction,
- * debit_transaction, reversal_transaction, interbank_transaction) do NOT have
- * an incoming_txn_id column. The link to incoming_transaction is maintained via
- * reference_number, which stores the sourceRef from IncomingTransaction.
- * ─────────────────────────────────────────────────────────────────────────
+ * HOW incomingTxnId is set:
+ *   incoming.getIncomingTxnId() gives us the DB primary key of the
+ *   IncomingTransaction row. We copy it to each transaction subclass as a FK.
  */
 public class TransactionDispatcher implements Runnable {
 
-	private final BlockingQueue<IncomingTransaction> blockingQueue;
+    private final BlockingQueue<IncomingTransaction> blockingQueue;
 
-	private final CreditTransactionDao creditTxnDao;
-	private final DebitTransactionDao debitTxnDao;
-	private final ReversalTransactionDao reversalTxnDao;
-	private final InterBankTransactionDao interbankTxnDao;
-	private final IncomingTransactionDao incomingTxnDao;
-	private final AccountDao accountDao;
+    private final CreditTransactionDao    creditTxnDao;
+    private final DebitTransactionDao     debitTxnDao;
+    private final ReversalTransactionDao  reversalTxnDao;
+    private final InterBankTransactionDao interbankTxnDao;
+    private final IncomingTransactionDao  incomingTxnDao;
+    private final AccountDao              accountDao;
 
-	public TransactionDispatcher(BlockingQueue<IncomingTransaction> blockingQueue) {
-		this.blockingQueue = blockingQueue;
-		this.creditTxnDao = new CreditTransactionDaoImpl();
-		this.debitTxnDao = new DebitTransactionDaoImpl();
-		this.reversalTxnDao = new ReversalTransactionDaoImpl();
-		this.interbankTxnDao = new InterBankTransactionDaoImpl();
-		this.incomingTxnDao = new IncomingTransactionDaoImpl();
-		this.accountDao = new AccountDaoImpl();
-	}
+    public TransactionDispatcher(BlockingQueue<IncomingTransaction> blockingQueue) {
+        this.blockingQueue   = blockingQueue;
+        this.creditTxnDao    = new CreditTransactionDaoImpl();
+        this.debitTxnDao     = new DebitTransactionDaoImpl();
+        this.reversalTxnDao  = new ReversalTransactionDaoImpl();
+        this.interbankTxnDao = new InterBankTransactionDaoImpl();
+        this.incomingTxnDao  = new IncomingTransactionDaoImpl();
+        this.accountDao      = new AccountDaoImpl();
+    }
 
-	@Override
-	public void run() {
+    @Override
+    public void run() {
 
-		System.out.println("[TransactionDispatcher] Started. Waiting for transactions on queue...");
-		System.out.println("[TransactionDispatcher] Thread: " + Thread.currentThread().getName());
+        System.out.println("[TransactionDispatcher] Started. Waiting for transactions...");
+        System.out.println("[TransactionDispatcher] Thread: " + Thread.currentThread().getName());
 
-		while (!Thread.currentThread().isInterrupted()) {
+        while (!Thread.currentThread().isInterrupted()) {
 
-			IncomingTransaction incoming = null;
+            IncomingTransaction incoming = null;
 
-			try {
-				// STEP 1: block until something arrives
-				incoming = blockingQueue.take();
+            try {
+                incoming = blockingQueue.take();
 
-				// Shutdown sentinel
-				if ("SHUTDOWN".equals(incoming.getSourceRef())) {
-					System.out.println("[TransactionDispatcher] Shutdown signal received. Stopping.");
-					break;
-				}
+                // Shutdown sentinel
+                if ("SHUTDOWN".equals(incoming.getSourceRef())) {
+                    System.out.println("[TransactionDispatcher] Shutdown signal received. Stopping.");
+                    break;
+                }
 
-				System.out.println("\n[TransactionDispatcher] Dispatching: " + incoming.getSourceRef() + " | type: "
-						+ incoming.getTxnType() + " | amount: " + incoming.getAmount());
+                System.out.println("\n[TransactionDispatcher] Dispatching: " + incoming.getSourceRef()
+                        + " | type: " + incoming.getTxnType()
+                        + " | amount: " + incoming.getAmount()
+                        + " | fromBank: " + incoming.getFromBank()
+                        + " | toBank: " + incoming.getToBank());
 
-				dispatch(incoming);
+                dispatch(incoming);
 
-			} catch (InterruptedException e) {
-				Thread.currentThread().interrupt();
-				System.out.println("[TransactionDispatcher] Interrupted. Stopping.");
-				break;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.out.println("[TransactionDispatcher] Interrupted. Stopping.");
+                break;
 
-			} catch (Exception e) {
-				System.out.println("[TransactionDispatcher] ERROR dispatching: "
-						+ (incoming != null ? incoming.getSourceRef() : "unknown") + " | " + e.getMessage());
-				e.printStackTrace();
+            } catch (Exception e) {
+                System.out.println("[TransactionDispatcher] ERROR dispatching: "
+                        + (incoming != null ? incoming.getSourceRef() : "unknown")
+                        + " | " + e.getMessage());
+                e.printStackTrace();
 
-				if (incoming != null && incoming.getIncomingTxnId() != null) {
-					try {
-						incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
-					} catch (Exception ex) {
-						System.out.println("[TransactionDispatcher] Could not mark FAILED: " + ex.getMessage());
-					}
-				}
-			}
-		}
+                if (incoming != null && incoming.getIncomingTxnId() != null) {
+                    try {
+                        incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
+                    } catch (Exception ex) {
+                        System.out.println("[TransactionDispatcher] Could not mark FAILED: " + ex.getMessage());
+                    }
+                }
+            }
+        }
 
-		System.out.println("[TransactionDispatcher] Loop ended. Closing connection pool.");
-		ConnectionPool.shutdown();
-	}
+        System.out.println("[TransactionDispatcher] Loop ended. Closing connection pool.");
+        ConnectionPool.shutdown();
+    }
 
-	// -----------------------------------------------------------------------
-	// dispatch — handles one IncomingTransaction
-	// -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // dispatch — handles one IncomingTransaction
+    // -----------------------------------------------------------------------
 
-	private void dispatch(IncomingTransaction incoming) {
+    private void dispatch(IncomingTransaction incoming) {
 
-		String normalizedPayload = incoming.getNormalizedPayload();
-		TransactionType txnType = incoming.getTxnType();
+        String normalizedPayload = incoming.getNormalizedPayload();
+        TransactionType txnType  = incoming.getTxnType();
 
-		// STEP 2: Parse normalizedPayload fields
-		String debitAccountNum = extractJsonField(normalizedPayload, "debitAccount");
-		String creditAccountNum = extractJsonField(normalizedPayload, "creditAccount");
-		String currency = nullSafe(extractJsonField(normalizedPayload, "currency"));
-		String originalTxnRef = nullSafe(extractJsonField(normalizedPayload, "originalTxnRef"));
-		String reversalReason = nullSafe(extractJsonField(normalizedPayload, "reversalReason"));
-		// senderIFSC used as correspondentBankCode for INTRABANK
-		String senderIFSC = nullSafe(extractJsonField(normalizedPayload, "senderIFSC"));
+        // Parse all fields from normalizedPayload
+        String debitAccountNum  = extractJsonField(normalizedPayload, "debitAccount");
+        String creditAccountNum = extractJsonField(normalizedPayload, "creditAccount");
+        String currency         = nullSafe(extractJsonField(normalizedPayload, "currency"));
+        String originalTxnRef   = nullSafe(extractJsonField(normalizedPayload, "originalTxnRef"));
+        String reversalReason   = nullSafe(extractJsonField(normalizedPayload, "reversalReason"));
+        String senderIFSC       = nullSafe(extractJsonField(normalizedPayload, "senderIFSC"));
 
-		if (debitAccountNum == null || creditAccountNum == null) {
-			System.out.println("[TransactionDispatcher] SKIPPING — missing debitAccount or "
-					+ "creditAccount in normalizedPayload for: " + incoming.getSourceRef());
-			incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
-			return;
-		}
+        // fromBank and toBank — parse from normalizedPayload
+        // These are stored both in IncomingTransaction fields AND in normalizedPayload JSON
+        String fromBank = nullSafe(extractJsonField(normalizedPayload, "fromBank"));
+        String toBank   = nullSafe(extractJsonField(normalizedPayload, "toBank"));
 
-		// STEP 3: Look up account IDs
-		// UPI uses VPA handles — no real rows in account table for them
-		boolean isUpi = normalizedPayload.contains("\"accountValidationSkipped\":true");
+        // Also try to get from IncomingTransaction entity fields as fallback
+        if (fromBank.isEmpty() && incoming.getFromBank() != null) {
+            fromBank = incoming.getFromBank();
+        }
+        if (toBank.isEmpty() && incoming.getToBank() != null) {
+            toBank = incoming.getToBank();
+        }
 
-		Long debitAccountId;
-		Long creditAccountId;
+        if (debitAccountNum == null || creditAccountNum == null) {
+            System.out.println("[TransactionDispatcher] SKIPPING — missing debitAccount or creditAccount for: "
+                    + incoming.getSourceRef());
+            incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
+            return;
+        }
 
-		if (isUpi) {
-			// UPI VPA addresses don't have account table rows — use 0L as placeholder
-			debitAccountId = 0L;
-			creditAccountId = 0L;
-			System.out.println("[TransactionDispatcher] UPI transaction — skipping account lookup for VPA addresses.");
-		} else {
-			Account debitAccount = accountDao.findByAccountNumber(debitAccountNum);
-			Account creditAccount = accountDao.findByAccountNumber(creditAccountNum);
+        // UPI uses VPA handles — skip account table lookup
+        boolean isUpi = normalizedPayload.contains("\"accountValidationSkipped\":true");
 
-			if (debitAccount == null) {
-				System.out.println("[TransactionDispatcher] FAILED — debitAccount not found in DB: " + debitAccountNum
-						+ " | sourceRef: " + incoming.getSourceRef());
-				incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
-				return;
-			}
-			if (creditAccount == null) {
-				System.out.println("[TransactionDispatcher] FAILED — creditAccount not found in DB: " + creditAccountNum
-						+ " | sourceRef: " + incoming.getSourceRef());
-				incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
-				return;
-			}
+        Long debitAccountId;
+        Long creditAccountId;
 
-			debitAccountId = debitAccount.getId();
-			creditAccountId = creditAccount.getId();
-		}
+        if (isUpi) {
+            debitAccountId  = 0L;
+            creditAccountId = 0L;
+            System.out.println("[TransactionDispatcher] UPI — skipping account lookup for VPA addresses.");
+        } else {
+            Account debitAccount  = accountDao.findByAccountNumber(debitAccountNum);
+            Account creditAccount = accountDao.findByAccountNumber(creditAccountNum);
 
-		BigDecimal amount = incoming.getAmount();
-		LocalDate valueDate = incoming.getValueDate();
-		String sourceRef = incoming.getSourceRef();
+            if (debitAccount == null) {
+                System.out.println("[TransactionDispatcher] FAILED — debit account not found: "
+                        + debitAccountNum + " | ref: " + incoming.getSourceRef());
+                incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
+                return;
+            }
+            if (creditAccount == null) {
+                System.out.println("[TransactionDispatcher] FAILED — credit account not found: "
+                        + creditAccountNum + " | ref: " + incoming.getSourceRef());
+                incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
+                return;
+            }
 
-		// STEP 4: Build the correct subclass and save to its table
-		switch (txnType) {
+            debitAccountId  = debitAccount.getId();
+            creditAccountId = creditAccount.getId();
+        }
 
-		// ----------------------------------------------------------------
-		// CREDIT — money comes into creditAccount
-		// ----------------------------------------------------------------
-		case CREDIT: {
-			CreditTransaction credit = new CreditTransaction(debitAccountId, creditAccountId, creditAccountNum, amount,
-					currency.isEmpty() ? "INR" : currency, valueDate, sourceRef // sourceRef is stored as
-																				// reference_number
-			);
-			credit.setStatus(TransactionStatus.INITIATED);
-			credit.setCreatedBy("DISPATCHER");
+        BigDecimal amount    = incoming.getAmount();
+        LocalDate  valueDate = incoming.getValueDate();
+        String     sourceRef = incoming.getSourceRef();
 
-			creditTxnDao.save(credit);
+        // incomingTxnId — FK linking back to the incoming_transaction row
+        Long incomingTxnId = incoming.getIncomingTxnId();
 
-			System.out.println("[TransactionDispatcher] CREDIT saved | txn_id: " + credit.getTxnId()
-					+ " | creditAccount: " + creditAccountNum);
-			break;
-		}
+        // Build and save the correct transaction subclass
+        switch (txnType) {
 
-		// ----------------------------------------------------------------
-		// DEBIT — money goes out of debitAccount
-		// ----------------------------------------------------------------
-		case DEBIT: {
-			DebitTransaction debit = new DebitTransaction(debitAccountId, debitAccountNum, creditAccountId, amount,
-					currency.isEmpty() ? "INR" : currency, valueDate, sourceRef);
-			debit.setStatus(TransactionStatus.INITIATED);
-			debit.setCreatedBy("DISPATCHER");
+            case CREDIT: {
+                CreditTransaction credit = new CreditTransaction(
+                        debitAccountId, creditAccountId, creditAccountNum,
+                        amount, currency.isEmpty() ? "INR" : currency, valueDate, sourceRef);
+                credit.setStatus(TransactionStatus.INITIATED);
+                credit.setCreatedBy("DISPATCHER");
+                // Set the new fields
+                credit.setFromBank(fromBank);
+                credit.setToBank(toBank);
+                credit.setIncomingTxnId(incomingTxnId);
 
-			debitTxnDao.save(debit);
+                creditTxnDao.save(credit);
 
-			System.out.println("[TransactionDispatcher] DEBIT saved | txn_id: " + debit.getTxnId() + " | debitAccount: "
-					+ debitAccountNum);
-			break;
-		}
+                System.out.println("[TransactionDispatcher] CREDIT saved | txn_id: " + credit.getTxnId()
+                        + " | creditAccount: " + creditAccountNum
+                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
+                break;
+            }
 
-		// ----------------------------------------------------------------
-		// REVERSAL — undo of a previous transaction
-		// ----------------------------------------------------------------
-		case REVERSAL: {
-			ReversalTransaction reversal = new ReversalTransaction(debitAccountId, creditAccountId, amount,
-					currency.isEmpty() ? "INR" : currency, valueDate, sourceRef, originalTxnRef,
-					reversalReason.isEmpty() ? "UNSPECIFIED" : reversalReason);
-			reversal.setStatus(TransactionStatus.INITIATED);
-			reversal.setCreatedBy("DISPATCHER");
+            case DEBIT: {
+                DebitTransaction debit = new DebitTransaction(
+                        debitAccountId, debitAccountNum, creditAccountId,
+                        amount, currency.isEmpty() ? "INR" : currency, valueDate, sourceRef);
+                debit.setStatus(TransactionStatus.INITIATED);
+                debit.setCreatedBy("DISPATCHER");
+                debit.setFromBank(fromBank);
+                debit.setToBank(toBank);
+                debit.setIncomingTxnId(incomingTxnId);
 
-			reversalTxnDao.save(reversal);
+                debitTxnDao.save(debit);
 
-			System.out.println("[TransactionDispatcher] REVERSAL saved | txn_id: " + reversal.getTxnId()
-					+ " | originalRef: " + originalTxnRef);
-			break;
-		}
+                System.out.println("[TransactionDispatcher] DEBIT saved | txn_id: " + debit.getTxnId()
+                        + " | debitAccount: " + debitAccountNum
+                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
+                break;
+            }
 
-		// ----------------------------------------------------------------
-		// INTRABANK — inter-bank bilateral settlement via RTGS
-		// ----------------------------------------------------------------
-		case INTRABANK: {
-			// correspondentBankCode = senderIFSC for RTGS interbank.
-			// Fall back to fromBank name if senderIFSC is blank.
-			String correspondentCode = senderIFSC.isEmpty() ? nullSafe(extractJsonField(normalizedPayload, "fromBank"))
-					: senderIFSC;
+            case REVERSAL: {
+                ReversalTransaction reversal = new ReversalTransaction(
+                        debitAccountId, creditAccountId, amount,
+                        currency.isEmpty() ? "INR" : currency, valueDate, sourceRef,
+                        originalTxnRef, reversalReason.isEmpty() ? "UNSPECIFIED" : reversalReason);
+                reversal.setStatus(TransactionStatus.INITIATED);
+                reversal.setCreatedBy("DISPATCHER");
+                reversal.setFromBank(fromBank);
+                reversal.setToBank(toBank);
+                reversal.setIncomingTxnId(incomingTxnId);
 
-			InterBankTransaction interbank = new InterBankTransaction(debitAccountId, creditAccountId,
-					correspondentCode, amount, currency.isEmpty() ? "INR" : currency, valueDate, sourceRef);
-			interbank.setStatus(TransactionStatus.INITIATED);
-			interbank.setCreatedBy("DISPATCHER");
+                reversalTxnDao.save(reversal);
 
-			interbankTxnDao.save(interbank);
+                System.out.println("[TransactionDispatcher] REVERSAL saved | txn_id: " + reversal.getTxnId()
+                        + " | originalRef: " + originalTxnRef
+                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
+                break;
+            }
 
-			System.out.println("[TransactionDispatcher] INTRABANK saved | txn_id: " + interbank.getTxnId()
-					+ " | correspondent: " + correspondentCode);
-			break;
-		}
+            case INTRABANK: {
+                // correspondentBankCode = senderIFSC, fallback to fromBank name
+                String correspondentCode = senderIFSC.isEmpty() ? fromBank : senderIFSC;
 
-		// ----------------------------------------------------------------
-		// Unsupported types (FEE, SWAP etc.) — not implemented yet
-		// ----------------------------------------------------------------
-		default: {
-			System.out.println(
-					"[TransactionDispatcher] SKIPPING unsupported txnType: " + txnType + " | sourceRef: " + sourceRef);
-			incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
-			return;
-		}
-		}
+                InterBankTransaction interbank = new InterBankTransaction(
+                        debitAccountId, creditAccountId, correspondentCode,
+                        amount, currency.isEmpty() ? "INR" : currency, valueDate, sourceRef);
+                interbank.setStatus(TransactionStatus.INITIATED);
+                interbank.setCreatedBy("DISPATCHER");
+                interbank.setFromBank(fromBank);
+                interbank.setToBank(toBank);
+                interbank.setIncomingTxnId(incomingTxnId);
 
-		// STEP 5: Mark incoming_transaction as PROCESSED
-		incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.PROCESSED);
-		System.out
-				.println("[TransactionDispatcher] Marked PROCESSED | incoming_txn_id: " + incoming.getIncomingTxnId());
-	}
+                interbankTxnDao.save(interbank);
 
-	// -----------------------------------------------------------------------
-	// extractJsonField — pure Core Java JSON field extractor
-	// -----------------------------------------------------------------------
+                System.out.println("[TransactionDispatcher] INTRABANK saved | txn_id: " + interbank.getTxnId()
+                        + " | correspondent: " + correspondentCode
+                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
+                break;
+            }
 
-	private String extractJsonField(String json, String fieldName) {
-		if (json == null || fieldName == null)
-			return null;
+            default: {
+                System.out.println("[TransactionDispatcher] SKIPPING unsupported txnType: "
+                        + txnType + " | ref: " + sourceRef);
+                incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
+                return;
+            }
+        }
 
-		String searchKey = "\"" + fieldName + "\":";
-		int keyIndex = json.indexOf(searchKey);
-		if (keyIndex == -1)
-			return null;
+        // Mark IncomingTransaction as PROCESSED
+        incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.PROCESSED);
+        System.out.println("[TransactionDispatcher] Marked PROCESSED | incoming_txn_id: "
+                + incoming.getIncomingTxnId());
+    }
 
-		int valueStart = keyIndex + searchKey.length();
-		while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
-			valueStart++;
-		}
+    // -----------------------------------------------------------------------
+    // Pure Java JSON field extractor (no external libraries needed)
+    // -----------------------------------------------------------------------
 
-		boolean isQuoted = (valueStart < json.length() && json.charAt(valueStart) == '"');
+    private String extractJsonField(String json, String fieldName) {
+        if (json == null || fieldName == null) return null;
 
-		if (isQuoted) {
-			int openQuote = valueStart;
-			int closeQuote = json.indexOf('"', openQuote + 1);
-			if (closeQuote == -1)
-				return null;
-			return json.substring(openQuote + 1, closeQuote);
-		} else {
-			int endIndex = json.indexOf(',', valueStart);
-			if (endIndex == -1)
-				endIndex = json.indexOf('}', valueStart);
-			if (endIndex == -1)
-				endIndex = json.length();
-			return json.substring(valueStart, endIndex).trim();
-		}
-	}
+        String searchKey = "\"" + fieldName + "\":";
+        int keyIndex = json.indexOf(searchKey);
+        if (keyIndex == -1) return null;
 
-	private String nullSafe(String value) {
-		return value != null ? value : "";
-	}
+        int valueStart = keyIndex + searchKey.length();
+        while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
+            valueStart++;
+        }
+
+        boolean isQuoted = (valueStart < json.length() && json.charAt(valueStart) == '"');
+
+        if (isQuoted) {
+            int openQuote  = valueStart;
+            int closeQuote = json.indexOf('"', openQuote + 1);
+            if (closeQuote == -1) return null;
+            return json.substring(openQuote + 1, closeQuote);
+        } else {
+            int endIndex = json.indexOf(',', valueStart);
+            if (endIndex == -1) endIndex = json.indexOf('}', valueStart);
+            if (endIndex == -1) endIndex = json.length();
+            return json.substring(valueStart, endIndex).trim();
+        }
+    }
+
+    private String nullSafe(String value) {
+        return value != null ? value : "";
+    }
 }

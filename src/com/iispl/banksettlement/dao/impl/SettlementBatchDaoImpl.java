@@ -32,7 +32,6 @@ import java.util.List;
  * settled_amount, settled_date, settled_status, failure_reason, created_at,
  * updated_at, created_by, version
  *
- * PACKAGE: com.iispl.banksettlement.dao.impl
  */
 public class SettlementBatchDaoImpl implements SettlementBatchDao {
 

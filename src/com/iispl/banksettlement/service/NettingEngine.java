@@ -1,6 +1,16 @@
 package com.iispl.banksettlement.service;
 
-import com.iispl.banksettlement.entity.NettingResult;
+import com.iispl.banksettlement.dao.BankDao;
+import com.iispl.banksettlement.dao.NettingPositionDao;
+import com.iispl.banksettlement.dao.NpciMemberAccountDao;
+import com.iispl.banksettlement.dao.impl.BankDaoImpl;
+import com.iispl.banksettlement.dao.impl.NettingPositionDaoImpl;
+import com.iispl.banksettlement.dao.impl.NpciMemberAccountDaoImpl;
+import com.iispl.banksettlement.entity.Bank;
+import com.iispl.banksettlement.entity.Npci;
+import com.iispl.banksettlement.entity.NettingPosition;
+import com.iispl.banksettlement.entity.NpciMemberAccount;
+import com.iispl.banksettlement.enums.NetDirection;
 import com.iispl.connectionpool.ConnectionPool;
 
 import java.math.BigDecimal;
@@ -15,142 +25,167 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * NettingEngine — Computes inter-bank bilateral net positions after settlement.
+ * NettingEngine — Computes bilateral net positions between banks after settlement.
  *
- * WHAT IS NETTING?
+ * HOW IT WORKS (step by step):
  * ─────────────────────────────────────────────────────────────────────────
- * Instead of settling each transaction individually between banks, we
- * NET all the transactions:
+ * STEP 1 — Load settled transactions from DB.
+ *   Reads all incoming_transaction rows with processing_status = 'PROCESSED'.
+ *   Extracts fromBank, toBank, and amount from each row's normalized_payload.
  *
- *   Example:
- *     HDFC → SBI: Rs. 5,00,000
- *     SBI → HDFC: Rs. 2,00,000
+ * STEP 2 — Build bilateral gross position map.
+ *   For each pair of banks (BankA, BankB), we track:
+ *     grossDebit  → total amount BankA sent TO BankB
+ *     grossCredit → total amount BankA received FROM BankB
  *
- *   Instead of two transfers, we net it:
- *     HDFC pays SBI the net: Rs. 5,00,000 - Rs. 2,00,000 = Rs. 3,00,000
+ *   Map key = "BankA|BankB" (alphabetically sorted so HDFC|SBI and SBI|HDFC
+ *   are the same pair).
  *
- * HOW THIS CLASS WORKS:
- * ─────────────────────────────────────────────────────────────────────────
- * 1. Read all SETTLED incoming_transaction records from the DB.
- *    (Each settled record has fromBank and toBank in normalized_payload)
+ * STEP 3 — Convert map to NettingPosition list.
+ *   For each bank pair:
+ *     netAmount = grossCreditAmount - grossDebitAmount
+ *     direction:
+ *       netAmount > 0 → NET_CREDIT (BankA receives money)
+ *       netAmount < 0 → NET_DEBIT  (BankA pays money, flip direction)
+ *       netAmount = 0 → FLAT
+ *   counterpartyBankId = bank.bank_id of the toBank (looked up from DB).
  *
- * 2. Build a bilateralMap: Map where key = "BankA|BankB" and value = net amount.
- *    For each transaction:
- *      - fromBank is debited (sent money)
- *      - toBank is credited (received money)
+ * STEP 4 — Save each NettingPosition to DB (netting_position table).
  *
- *    Key is always sorted alphabetically so "HDFC|SBI" and "SBI|HDFC"
- *    don't create two separate entries.
+ * STEP 5 — Apply positions to NPCI member account balances.
+ *   For each NET_DEBIT position:
+ *     fromBank's NPCI account balance decreases by netAmount.
+ *     toBank's   NPCI account balance increases by netAmount.
+ *   Updated balances are saved back to npci_bank_account table.
  *
- * 3. Convert the bilateralMap to a List<NettingResult>.
- *    Each NettingResult says: "Bank X must pay Y amount to Bank Z".
- *    (If net is negative, the direction flips.)
+ * STEP 6 — Print the human-readable settlement report.
  *
  * PACKAGE: com.iispl.banksettlement.service
  */
 public class NettingEngine {
 
-    // Load all settled incoming transactions and their fromBank/toBank from normalized_payload
-    private static final String SQL_LOAD_SETTLED =
+    // Loads processed incoming transactions for netting computation
+    private static final String SQL_LOAD_PROCESSED =
             "SELECT normalized_payload, amount " +
             "FROM incoming_transaction " +
             "WHERE processing_status = 'PROCESSED' " +
             "ORDER BY incoming_txn_id ASC";
 
-    // -----------------------------------------------------------------------
-    // Main entry point
-    // -----------------------------------------------------------------------
+    // DAOs
+    private final BankDao                bankDao;
+    private final NettingPositionDao     nettingPositionDao;
+    private final NpciMemberAccountDao   npciAccountDao;
 
-    /**
-     * Computes all bilateral net positions from settled transactions.
-     *
-     * Steps:
-     * 1. Load all PROCESSED incoming_transaction rows from DB.
-     * 2. Parse fromBank and toBank from each normalized_payload.
-     * 3. Build bilateral net positions.
-     * 4. Convert to List<NettingResult> and return.
-     *
-     * @return List of NettingResult — each entry is one bank-to-bank payment obligation
-     */
-    public List<NettingResult> computeNetting() {
-
-        System.out.println("\n================================================");
-        System.out.println("  NETTING ENGINE — COMPUTING BILATERAL POSITIONS");
-        System.out.println("  Date: " + LocalDate.now());
-        System.out.println("================================================\n");
-
-        // bilateralMap key = "BankA|BankB" (always alphabetical)
-        // bilateralMap value = net amount (positive means BankA pays BankB)
-        Map<String, BigDecimal> bilateralMap = new HashMap<>();
-
-        loadAndAccumulateTransactions(bilateralMap);
-
-        List<NettingResult> results = convertToNettingResults(bilateralMap);
-
-        printNettingReport(results);
-
-        return results;
+    public NettingEngine() {
+        this.bankDao            = new BankDaoImpl();
+        this.nettingPositionDao = new NettingPositionDaoImpl();
+        this.npciAccountDao     = new NpciMemberAccountDaoImpl();
     }
 
     // -----------------------------------------------------------------------
-    // Step 1 + 2: Load transactions and build bilateral map
+    // runNetting — main entry point, called by NettingServiceImpl
     // -----------------------------------------------------------------------
 
-    private void loadAndAccumulateTransactions(Map<String, BigDecimal> bilateralMap) {
+    /**
+     * Runs the complete netting cycle and returns all computed NettingPositions.
+     */
+    public List<NettingPosition> runNetting() {
+
+        System.out.println("\n================================================");
+        System.out.println("  NETTING ENGINE — STARTING");
+        System.out.println("  Date: " + LocalDate.now());
+        System.out.println("================================================\n");
+
+        // STEP 1 + 2: Load transactions and build gross bilateral map
+        // Key = "BankA|BankB" (alphabetically sorted)
+        // Value = BigDecimal[2] where [0] = grossDebit, [1] = grossCredit
+        // (from the perspective of BankA, the first in alphabetical order)
+        Map<String, BigDecimal[]> bilateralMap = new HashMap<>();
+        loadAndBuildBilateralMap(bilateralMap);
+
+        if (bilateralMap.isEmpty()) {
+            System.out.println("[NettingEngine] No PROCESSED transactions found. Run SettlementEngine first.");
+            return new ArrayList<>();
+        }
+
+        // STEP 3 + 4: Convert map to NettingPosition list and save to DB
+        List<NettingPosition> positions = buildAndSavePositions(bilateralMap);
+
+        // STEP 5: Apply positions to NPCI member accounts
+        applyToNpciAccounts(positions);
+
+        // STEP 6: Print final report
+        printFinalReport(positions);
+
+        return positions;
+    }
+
+    // -----------------------------------------------------------------------
+    // STEP 1 + 2: Load transactions from DB and build bilateral gross map
+    // -----------------------------------------------------------------------
+
+    private void loadAndBuildBilateralMap(Map<String, BigDecimal[]> bilateralMap) {
+
         Connection conn = null;
         PreparedStatement ps = null;
         ResultSet rs = null;
-
-        int count = 0;
+        int count   = 0;
         int skipped = 0;
 
         try {
             conn = ConnectionPool.getConnection();
-            ps = conn.prepareStatement(SQL_LOAD_SETTLED);
-            rs = ps.executeQuery();
+            ps   = conn.prepareStatement(SQL_LOAD_PROCESSED);
+            rs   = ps.executeQuery();
 
             while (rs.next()) {
                 String normalizedPayload = rs.getString("normalized_payload");
-                BigDecimal amount = rs.getBigDecimal("amount");
+                BigDecimal amount        = rs.getBigDecimal("amount");
 
                 String fromBank = extractJsonField(normalizedPayload, "fromBank");
                 String toBank   = extractJsonField(normalizedPayload, "toBank");
 
-                // Skip if fromBank or toBank is missing or blank
+                // Skip if bank names are missing or the same bank on both sides
                 if (fromBank == null || fromBank.trim().isEmpty()
                         || toBank == null || toBank.trim().isEmpty()) {
                     skipped++;
                     continue;
                 }
 
-                // Skip self-transfers (same bank on both sides — no net movement)
+                fromBank = fromBank.trim();
+                toBank   = toBank.trim();
+
+                // Same bank on both sides — internal transaction, no inter-bank net movement
                 if (fromBank.equalsIgnoreCase(toBank)) {
-                    // Still count it, but no inter-bank obligation
                     count++;
                     continue;
                 }
 
-                // Build the map key — always sorted alphabetically so both directions
-                // map to the same key
-                String bankA = fromBank.trim();
-                String bankB = toBank.trim();
-
-                String mapKey;
-                BigDecimal netDelta;
-
-                if (bankA.compareToIgnoreCase(bankB) <= 0) {
-                    // Key = "bankA|bankB", bankA pays bankB → positive
-                    mapKey = bankA + "|" + bankB;
-                    netDelta = amount;
+                // Sort alphabetically to create a consistent key for both directions
+                String bankA, bankB;
+                if (fromBank.compareToIgnoreCase(toBank) <= 0) {
+                    bankA = fromBank;
+                    bankB = toBank;
                 } else {
-                    // Key = "bankB|bankA", bankA pays bankB means bankB receives → negative from bankB's perspective
-                    // This means bankA owes bankB, so from bankB→bankA perspective it is NEGATIVE
-                    mapKey = bankB + "|" + bankA;
-                    netDelta = amount.negate();
+                    bankA = toBank;
+                    bankB = fromBank;
                 }
 
-                BigDecimal existing = bilateralMap.getOrDefault(mapKey, BigDecimal.ZERO);
-                bilateralMap.put(mapKey, existing.add(netDelta));
+                String mapKey = bankA + "|" + bankB;
+
+                // Get or create the array: [0] = grossDebit for bankA, [1] = grossCredit for bankA
+                BigDecimal[] amounts = bilateralMap.getOrDefault(mapKey, new BigDecimal[]{
+                        BigDecimal.ZERO, BigDecimal.ZERO
+                });
+
+                if (fromBank.equalsIgnoreCase(bankA)) {
+                    // fromBank = bankA → bankA is SENDING money → add to bankA grossDebit
+                    amounts[0] = amounts[0].add(amount);
+                } else {
+                    // fromBank = bankB → bankA is RECEIVING money → add to bankA grossCredit
+                    amounts[1] = amounts[1].add(amount);
+                }
+
+                bilateralMap.put(mapKey, amounts);
                 count++;
             }
 
@@ -161,68 +196,167 @@ public class NettingEngine {
             }
 
         } catch (SQLException e) {
-            throw new RuntimeException("[NettingEngine] Failed to load settled transactions: " + e.getMessage(), e);
+            throw new RuntimeException("[NettingEngine] Failed to load transactions: " + e.getMessage(), e);
         } finally {
             closeResources(rs, ps, conn);
         }
     }
 
     // -----------------------------------------------------------------------
-    // Step 3: Convert bilateral map to NettingResult list
+    // STEP 3 + 4: Convert bilateral map to NettingPosition list and save to DB
     // -----------------------------------------------------------------------
 
-    private List<NettingResult> convertToNettingResults(Map<String, BigDecimal> bilateralMap) {
-        List<NettingResult> results = new ArrayList<>();
+    private List<NettingPosition> buildAndSavePositions(Map<String, BigDecimal[]> bilateralMap) {
 
-        for (Map.Entry<String, BigDecimal> entry : bilateralMap.entrySet()) {
-            String[] banks = entry.getKey().split("\\|");
-            String bankA = banks[0]; // alphabetically first bank
-            String bankB = banks[1]; // alphabetically second bank
-            BigDecimal netAmount = entry.getValue();
+        List<NettingPosition> positions = new ArrayList<>();
 
-            if (netAmount.compareTo(BigDecimal.ZERO) == 0) {
-                // Perfectly netted — no payment needed
-                continue;
-            }
+        System.out.println("\n[NettingEngine] Computing bilateral net positions...\n");
 
-            NettingResult result;
+        for (Map.Entry<String, BigDecimal[]> entry : bilateralMap.entrySet()) {
+
+            String[] banks    = entry.getKey().split("\\|");
+            String bankAName  = banks[0];  // alphabetically first
+            String bankBName  = banks[1];  // alphabetically second
+
+            BigDecimal grossDebitA  = entry.getValue()[0]; // bankA sent to bankB
+            BigDecimal grossCreditA = entry.getValue()[1]; // bankA received from bankB
+
+            // Net = what bankA received - what bankA sent
+            BigDecimal netAmount = grossCreditA.subtract(grossDebitA);
+
+            // Determine who pays whom and what direction to use
+            String fromBankName;
+            String toBankName;
+            BigDecimal absNet;
+            NetDirection direction;
 
             if (netAmount.compareTo(BigDecimal.ZERO) > 0) {
-                // Positive → bankA owes bankB
-                result = new NettingResult(bankA, bankB, netAmount, LocalDate.now());
+                // bankA is the NET CREDITOR — bankB must pay bankA
+                fromBankName = bankBName;
+                toBankName   = bankAName;
+                absNet       = netAmount;
+                direction    = NetDirection.NET_DEBIT; // bankB is NET_DEBIT (pays)
+            } else if (netAmount.compareTo(BigDecimal.ZERO) < 0) {
+                // bankA is the NET DEBTOR — bankA must pay bankB
+                fromBankName = bankAName;
+                toBankName   = bankBName;
+                absNet       = netAmount.abs();
+                direction    = NetDirection.NET_DEBIT; // bankA is NET_DEBIT (pays)
             } else {
-                // Negative → bankB owes bankA (flip direction, use absolute value)
-                result = new NettingResult(bankB, bankA, netAmount.abs(), LocalDate.now());
+                // Perfectly balanced — FLAT
+                fromBankName = bankAName;
+                toBankName   = bankBName;
+                absNet       = BigDecimal.ZERO;
+                direction    = NetDirection.FLAT;
             }
 
-            results.add(result);
+            // Look up counterpartyBankId (toBank's bank_id in the bank table)
+            Bank toBank = bankDao.findByName(toBankName);
+            Long counterpartyBankId = (toBank != null) ? toBank.getBankId() : 0L;
+
+            if (toBank == null) {
+                System.out.println("[NettingEngine] WARNING: Bank not found in DB for name: "
+                        + toBankName + " | using counterpartyBankId = 0");
+            }
+
+            NettingPosition position = new NettingPosition(
+                    counterpartyBankId,
+                    fromBankName,
+                    toBankName,
+                    grossDebitA,
+                    grossCreditA,
+                    absNet,
+                    direction,
+                    LocalDate.now()
+            );
+
+            // Save to DB
+            nettingPositionDao.save(position);
+            positions.add(position);
         }
 
-        return results;
+        System.out.println("[NettingEngine] " + positions.size() + " netting position(s) saved to DB.");
+        return positions;
     }
 
     // -----------------------------------------------------------------------
-    // Print netting report
+    // STEP 5: Apply net positions to NPCI member account balances
     // -----------------------------------------------------------------------
 
-    private void printNettingReport(List<NettingResult> results) {
-        System.out.println("\n[NettingEngine] ══════════════════════════════════");
-        System.out.println("[NettingEngine]  INTER-BANK PAYMENT OBLIGATIONS");
-        System.out.println("[NettingEngine] ══════════════════════════════════");
+    private void applyToNpciAccounts(List<NettingPosition> positions) {
 
-        if (results.isEmpty()) {
-            System.out.println("[NettingEngine] No inter-bank net obligations found.");
-            System.out.println("[NettingEngine] (All transactions may be within the same bank, or no data.)");
-        } else {
-            System.out.println();
-            for (NettingResult result : results) {
-                System.out.println("[NettingEngine]  " + result.getFromBank()
-                        + "  →  MUST PAY  →  Rs. " + String.format("%,.2f", result.getNetAmount())
-                        + "  →  TO  →  " + result.getToBank());
+        // Load all NPCI member accounts from DB
+        List<NpciMemberAccount> allAccounts = npciAccountDao.findAll();
+
+        if (allAccounts.isEmpty()) {
+            System.out.println("[NettingEngine] WARNING: No NPCI member accounts found in DB.");
+            System.out.println("[NettingEngine] Run phase3_schema_changes.sql first.");
+            return;
+        }
+
+        // Save current balance as the opening balance BEFORE applying netting
+        // This is needed for reconciliation later
+        for (NpciMemberAccount account : allAccounts) {
+            account.setOpeningBalance(account.getCurrentBalance());
+        }
+
+        // Create NPCI entity and load the accounts into it
+        Npci npci = new Npci(allAccounts);
+
+        // Apply all net positions to the in-memory accounts
+        npci.applyNettingPositions(positions);
+
+        // Persist the updated balances back to DB
+        System.out.println("[NettingEngine] Saving updated NPCI balances to DB...");
+        for (NpciMemberAccount account : allAccounts) {
+            npciAccountDao.updateBalances(account);
+        }
+        System.out.println("[NettingEngine] NPCI balances updated in DB.");
+    }
+
+    // -----------------------------------------------------------------------
+    // STEP 6: Print the final human-readable settlement report
+    // -----------------------------------------------------------------------
+
+    private void printFinalReport(List<NettingPosition> positions) {
+
+        System.out.println("\n================================================");
+        System.out.println("  NETTING ENGINE — INTER-BANK PAYMENT REPORT");
+        System.out.println("  Date: " + LocalDate.now());
+        System.out.println("================================================");
+
+        boolean hasPayments = false;
+
+        for (NettingPosition pos : positions) {
+            if (pos.getDirection() == NetDirection.NET_DEBIT
+                    && pos.getNetAmount().compareTo(BigDecimal.ZERO) > 0) {
+
+                System.out.println("\n  " + pos.getFromBankName()
+                        + "  →  MUST PAY  →  Rs. "
+                        + String.format("%,.2f", pos.getNetAmount())
+                        + "  →  TO  →  " + pos.getToBankName());
+
+                System.out.println("    Gross amount " + pos.getFromBankName()
+                        + " sent:     Rs. " + String.format("%,.2f", pos.getGrossDebitAmount()));
+                System.out.println("    Gross amount " + pos.getFromBankName()
+                        + " received: Rs. " + String.format("%,.2f", pos.getGrossCreditAmount()));
+                System.out.println("    Net payable:              Rs. "
+                        + String.format("%,.2f", pos.getNetAmount()));
+
+                hasPayments = true;
+
+            } else if (pos.getDirection() == NetDirection.FLAT) {
+                System.out.println("\n  " + pos.getFromBankName() + "  ↔  " + pos.getToBankName()
+                        + "  →  FLAT (no net payment needed)");
             }
         }
 
-        System.out.println("[NettingEngine] ══════════════════════════════════\n");
+        if (!hasPayments && positions.stream()
+                .noneMatch(p -> p.getDirection() == NetDirection.NET_DEBIT)) {
+            System.out.println("\n  No inter-bank payments needed — all positions are FLAT.");
+        }
+
+        System.out.println("\n================================================\n");
     }
 
     // -----------------------------------------------------------------------

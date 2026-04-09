@@ -22,7 +22,6 @@ import java.util.List;
  * inside the normalized_payload JSON column for audit purposes.
  *
  * DB SCHEMA MIGRATION REQUIRED: Run this in Supabase SQL Editor before
- * deploying v2:
  *
  * ALTER TABLE incoming_transaction DROP COLUMN IF EXISTS currency;
  *

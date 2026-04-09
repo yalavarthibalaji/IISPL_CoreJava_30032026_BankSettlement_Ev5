@@ -1,6 +1,6 @@
 package com.iispl.banksettlement.utility;
 
-import com.iispl.banksettlement.entity.NettingResult;
+import com.iispl.banksettlement.entity.NettingPosition;
 import com.iispl.banksettlement.service.impl.NettingServiceImpl;
 import com.iispl.connectionpool.ConnectionPool;
 
@@ -9,30 +9,21 @@ import java.util.List;
 /**
  * NettingEngineTest — Runs the post-settlement netting cycle.
  *
+ * RUN THIS AFTER:
+ *   Step 1: FileIngestionTest       — ingests transaction files
+ *   Step 2: SettlementProcessorTest — dispatches to credit/debit tables
+ *   Step 3: SettlementEngineTest    — settles all transactions
+ *   Step 4: NettingEngineTest       ← YOU ARE HERE
+ *
  * WHAT THIS DOES:
- * ─────────────────────────────────────────────────────────────────────────
- * 1. Reads all PROCESSED incoming_transaction rows from DB.
- *    (These are transactions that have been ingested AND dispatched already.)
+ *   1. Reads all PROCESSED incoming_transaction rows from DB.
+ *   2. Extracts fromBank and toBank from each normalized_payload.
+ *   3. Computes bilateral gross debit, gross credit, and net amount per bank pair.
+ *   4. Saves NettingPosition rows to netting_position table.
+ *   5. Updates NPCI member account balances in npci_bank_account table.
+ *   6. Prints: "HDFC Bank → MUST PAY → Rs. X → TO → SBI Bank"
  *
- * 2. Parses fromBank and toBank from each row's normalized_payload JSON.
- *
- * 3. Computes bilateral net positions — for each pair of banks,
- *    calculates who owes whom and how much.
- *
- * 4. Prints the inter-bank payment report:
- *    "HDFC Bank → MUST PAY → Rs. 3,00,000 → TO → SBI Bank"
- *
- * 5. NPCI applies the netting results to update each bank's
- *    settlement account balance.
- *
- * PRE-REQUISITES:
- *   Run in this order:
- *     Step 1: FileIngestionTest       (or SettlementProcessorTest MODE_B)
- *     Step 2: SettlementProcessorTest (dispatches to credit/debit tables)
- *     Step 3: SettlementEngineTest    (settles all transactions)
- *     Step 4: NettingEngineTest       ← YOU ARE HERE
- *
- * PACKAGE: com.iispl.banksettlement.utility
+ * PRE-REQUISITE: Run phase3_schema_changes.sql in Supabase first.
  */
 public class NettingEngineTest {
 
@@ -44,10 +35,10 @@ public class NettingEngineTest {
 
         try {
             NettingServiceImpl nettingService = new NettingServiceImpl();
-            List<NettingResult> results = nettingService.runNetting();
+            List<NettingPosition> positions = nettingService.runNetting();
 
-            System.out.println("\n[NettingEngineTest] Summary:");
-            System.out.println("[NettingEngineTest] Total inter-bank obligations computed: " + results.size());
+            System.out.println("[NettingEngineTest] Done.");
+            System.out.println("[NettingEngineTest] Total bilateral netting positions: " + positions.size());
 
         } catch (Exception e) {
             System.out.println("\n[NettingEngineTest] FATAL ERROR: " + e.getMessage());
