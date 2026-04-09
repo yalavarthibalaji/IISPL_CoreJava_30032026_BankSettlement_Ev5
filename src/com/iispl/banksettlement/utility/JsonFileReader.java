@@ -5,6 +5,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * JsonFileReader — Reads a JSON transaction file where each line contains one
@@ -36,6 +37,7 @@ import java.util.List;
  * clarity.
  */
 public class JsonFileReader implements TransactionFileReader {
+    private static final Logger LOGGER = Logger.getLogger(JsonFileReader.class.getName());
 
 	// Label used in log output — e.g. "UPI_JSON" or "FINTECH_JSON"
 	private final String sourceFormatLabel;
@@ -69,31 +71,26 @@ public class JsonFileReader implements TransactionFileReader {
 
 				// Skip comment lines
 				if (trimmed.startsWith("#")) {
-					System.out.println("[JsonFileReader] Skipping comment at line " + lineNumber);
 					continue;
 				}
 
 				// Each valid data line must start with '{' (JSON object)
 				if (!trimmed.startsWith("{")) {
-					System.out.println("[JsonFileReader] WARNING — line " + lineNumber
-							+ " does not start with '{'. Skipping: " + trimmed);
+                    PhaseLogger.getLogger().warning("[JsonFileReader] Invalid JSON line at " + lineNumber + ". Skipping.");
 					continue;
 				}
 
 				// Basic JSON completeness check — must also end with '}'
 				if (!trimmed.endsWith("}")) {
-					System.out.println("[JsonFileReader] WARNING — line " + lineNumber
-							+ " does not end with '}'. Possibly truncated JSON. Skipping.");
+                    PhaseLogger.getLogger().warning("[JsonFileReader] Truncated JSON at line " + lineNumber + ". Skipping.");
 					continue;
 				}
 
 				payloads.add(trimmed);
-				System.out.println("[JsonFileReader][" + sourceFormatLabel + "] Read record at line " + lineNumber);
 			}
 		}
 
-		System.out.println("[JsonFileReader][" + sourceFormatLabel + "] Total records read: " + payloads.size()
-				+ " from file: " + filePath);
+        PhaseLogger.getLogger().info("[JsonFileReader][" + sourceFormatLabel + "] Total records read: " + payloads.size());
 		return payloads;
 	}
 

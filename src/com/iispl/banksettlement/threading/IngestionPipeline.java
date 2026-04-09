@@ -5,12 +5,16 @@ import com.iispl.banksettlement.dao.impl.IncomingTransactionDaoImpl;
 import com.iispl.banksettlement.entity.IncomingTransaction;
 import com.iispl.banksettlement.enums.SourceType;
 import com.iispl.banksettlement.registry.AdapterRegistry;
+import com.iispl.banksettlement.utility.PhaseLogger;
 import com.iispl.connectionpool.ConnectionPool;
 
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Logger;
 
 /**
  * IngestionPipeline — creates and submits IngestionWorker tasks.
@@ -27,6 +31,7 @@ import java.util.concurrent.TimeUnit;
  * dispatcher runs after.
  */
 public class IngestionPipeline {
+    private static final Logger LOGGER = Logger.getLogger(IngestionPipeline.class.getName());
 
 	private final BlockingQueue<IncomingTransaction> blockingQueue = new LinkedBlockingQueue<>(500);
 
@@ -35,13 +40,13 @@ public class IngestionPipeline {
 
 	private final AdapterRegistry adapterRegistry;
 	private final IncomingTransactionDao incomingTransactionDao;
+    private final ConcurrentHashMap<SourceType, SourceStats> statsBySource = new ConcurrentHashMap<>();
 
 	public IngestionPipeline() {
 		this.adapterRegistry = new AdapterRegistry();
 		this.incomingTransactionDao = new IncomingTransactionDaoImpl();
 
-		System.out.println(
-				"[IngestionPipeline] Initialised — pool ready, queue ready, " + "adapters registered, DAO created.");
+        PhaseLogger.getLogger().info("Ingestion pipeline initialized.");
 	}
 
 	/**
@@ -53,12 +58,12 @@ public class IngestionPipeline {
 	 *                   or JSON)
 	 */
 	public void ingest(SourceType sourceType, String rawPayload) {
+        statsBySource.computeIfAbsent(sourceType, k -> new SourceStats()).submitted.incrementAndGet();
 
 		IngestionWorker worker = new IngestionWorker(sourceType, rawPayload, adapterRegistry, blockingQueue,
-				incomingTransactionDao);
+				incomingTransactionDao, statsBySource.computeIfAbsent(sourceType, k -> new SourceStats()));
 
 		executor.submit(worker);
-		System.out.println("[IngestionPipeline] Submitted task for: " + sourceType);
 	}
 
 	public BlockingQueue<IncomingTransaction> getBlockingQueue() {
@@ -81,8 +86,7 @@ public class IngestionPipeline {
 	 * pool too early.
 	 */
 	public void shutdownExecutorOnly() {
-
-		System.out.println("[IngestionPipeline] Shutting down executor (ConnectionPool stays open)...");
+        PhaseLogger.getLogger().info("Shutting down ingestion workers...");
 
 		executor.shutdown();
 
@@ -90,12 +94,13 @@ public class IngestionPipeline {
 			boolean finished = executor.awaitTermination(60, TimeUnit.SECONDS);
 
 			if (!finished) {
-				System.out.println("[IngestionPipeline] Timeout — forcing remaining threads to stop.");
+                PhaseLogger.getLogger().warning("Timeout while waiting workers. Forcing shutdown.");
 				executor.shutdownNow();
 				executor.awaitTermination(10, TimeUnit.SECONDS);
 			}
 
-			System.out.println("[IngestionPipeline] Executor shutdown done. Queue size: " + blockingQueue.size());
+            PhaseLogger.getLogger().info("Ingestion workers stopped. Queue size: " + blockingQueue.size());
+            PhaseLogger.getLogger().info(buildSummaryReport());
 
 		} catch (InterruptedException e) {
 			executor.shutdownNow();
@@ -111,8 +116,7 @@ public class IngestionPipeline {
 	 * instead).
 	 */
 	public void shutdown() {
-
-		System.out.println("[IngestionPipeline] Shutting down...");
+        PhaseLogger.getLogger().info("Shutting down ingestion pipeline...");
 
 		executor.shutdown();
 
@@ -120,12 +124,13 @@ public class IngestionPipeline {
 			boolean finished = executor.awaitTermination(60, TimeUnit.SECONDS);
 
 			if (!finished) {
-				System.out.println("[IngestionPipeline] Timeout — forcing remaining threads to stop.");
+                PhaseLogger.getLogger().warning("Timeout while waiting workers. Forcing shutdown.");
 				executor.shutdownNow();
 				executor.awaitTermination(10, TimeUnit.SECONDS);
 			}
 
-			System.out.println("[IngestionPipeline] Clean shutdown done.");
+            PhaseLogger.getLogger().info("Ingestion worker shutdown complete.");
+            PhaseLogger.getLogger().info(buildSummaryReport());
 
 		} catch (InterruptedException e) {
 			executor.shutdownNow();
@@ -134,7 +139,35 @@ public class IngestionPipeline {
 		} finally {
 			// Only close the pool AFTER all worker threads are fully stopped
 			ConnectionPool.shutdown();
-			System.out.println("[IngestionPipeline] ConnectionPool closed.");
+            PhaseLogger.getLogger().info("ConnectionPool closed.");
 		}
 	}
+
+    public String buildSummaryReport() {
+        StringBuilder sb = new StringBuilder("Ingestion summary by source:");
+        for (SourceType sourceType : SourceType.values()) {
+            SourceStats stats = statsBySource.get(sourceType);
+            if (stats == null) {
+                continue;
+            }
+            sb.append(" ").append(sourceType.name())
+              .append("[read=").append(stats.submitted.get())
+              .append(", adapted=").append(stats.adapted.get())
+              .append(", queued=").append(stats.queued.get())
+              .append(", duplicate=").append(stats.duplicate.get())
+              .append(", rejected=").append(stats.rejected.get())
+              .append(", failed=").append(stats.failed.get())
+              .append("];");
+        }
+        return sb.toString();
+    }
+
+    static final class SourceStats {
+        final AtomicInteger submitted = new AtomicInteger();
+        final AtomicInteger adapted = new AtomicInteger();
+        final AtomicInteger queued = new AtomicInteger();
+        final AtomicInteger duplicate = new AtomicInteger();
+        final AtomicInteger rejected = new AtomicInteger();
+        final AtomicInteger failed = new AtomicInteger();
+    }
 }

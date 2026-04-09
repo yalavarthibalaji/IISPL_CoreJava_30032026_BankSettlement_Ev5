@@ -5,6 +5,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * TxtFileReader — Reads a NEFT fixed-width text batch file and returns each
@@ -26,8 +27,9 @@ import java.util.List;
  * skipped. This mirrors the validation NeftAdapter already does inside adapt().
  */
 public class TxtFileReader implements TransactionFileReader {
+    private static final Logger LOGGER = Logger.getLogger(TxtFileReader.class.getName());
 
-	private static final int NEFT_RECORD_LENGTH = 132;
+	private static final int NEFT_RECORD_LENGTH = 172;
 
 	@Override
 	public List<String> readLines(String filePath) throws IOException {
@@ -49,35 +51,27 @@ public class TxtFileReader implements TransactionFileReader {
 
 				// Skip comment lines
 				if (line.trim().startsWith("#")) {
-					System.out.println("[TxtFileReader] Skipping comment at line " + lineNumber);
 					continue;
 				}
 
 				// Length guard — NEFT records must be exactly 132 characters
 				if (line.length() < NEFT_RECORD_LENGTH) {
-					System.out.println("[TxtFileReader] WARNING — line " + lineNumber + " is only " + line.length()
-							+ " chars (expected " + NEFT_RECORD_LENGTH + "). Skipping: " + line.trim());
+                    PhaseLogger.getLogger().warning("[TxtFileReader] Invalid NEFT line length at " + lineNumber + ". Skipping.");
 					continue;
 				}
 
 				// Verify record type starts with CR or DR
 				String recordType = line.substring(0, 2).trim();
 				if (!recordType.equalsIgnoreCase("CR") && !recordType.equalsIgnoreCase("DR")) {
-					System.out.println("[TxtFileReader] WARNING — line " + lineNumber
-							+ " does not start with CR or DR (got: '" + recordType + "'). Skipping.");
+                    PhaseLogger.getLogger().warning("[TxtFileReader] Invalid NEFT record type at line " + lineNumber + ". Skipping.");
 					continue;
 				}
 
-				// Extract NEFT_REF for logging (positions 2-17, trimmed)
-				String neftRef = line.substring(2, 18).trim();
-
 				payloads.add(line);
-				System.out.println("[TxtFileReader] Read NEFT record at line " + lineNumber + " | type: " + recordType
-						+ " | ref: " + neftRef);
 			}
 		}
 
-		System.out.println("[TxtFileReader] Total NEFT records read: " + payloads.size() + " from file: " + filePath);
+        PhaseLogger.getLogger().info("[TxtFileReader] Total NEFT records read: " + payloads.size());
 		return payloads;
 	}
 

@@ -1,0 +1,16 @@
+2026-04-09 21:28:16 | INFO    | ==================================================
+2026-04-09 21:28:16 | INFO    | PHASE START : STEP 3 - SETTLEMENT ENGINE
+2026-04-09 21:28:16 | INFO    | LOG FILE    : logs\phase3_settlement_20260409_212816.log
+2026-04-09 21:28:16 | INFO    | ==================================================
+2026-04-09 21:28:16 | INFO    | Settlement engine started on 2026-04-09
+2026-04-09 21:28:16 | INFO    | Loading INITIATED transactions from DB...
+2026-04-09 21:28:36 | INFO    | Total INITIATED items loaded: 121
+2026-04-09 21:28:36 | INFO    | Phase 1 complete. Loaded 121 transactions onto queue.
+2026-04-09 21:28:36 | INFO    | Phase 2 started. Consumer thread: SettlementEngine-Consumer
+2026-04-09 21:28:36 | INFO    | Shutdown sentinel received. Queue drained. Starting settlement.
+2026-04-09 21:28:36 | INFO    | Phase 2 complete. Bucket sizes -> CBS: 25, RTGS: 21, NEFT: 25, UPI: 25, FT: 25
+2026-04-09 21:28:36 | INFO    | Phase 3 started. Running channel settlement.
+2026-04-09 21:29:31 | INFO    | Phase 3 complete. All channels settled.
+2026-04-09 21:29:31 | INFO    | Settlement engine completed.
+2026-04-09 21:29:31 | INFO    | Settlement completed successfully.
+2026-04-09 21:29:31 | INFO    | PHASE COMPLETE: STEP 3 - SETTLEMENT ENGINE (phase3_settlement)

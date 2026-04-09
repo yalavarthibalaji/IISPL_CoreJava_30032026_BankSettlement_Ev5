@@ -5,14 +5,17 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.concurrent.BlockingQueue;
+import java.util.logging.Logger;
 
 import com.iispl.banksettlement.entity.CreditTransaction;
 import com.iispl.banksettlement.entity.DebitTransaction;
 import com.iispl.banksettlement.entity.InterBankTransaction;
 import com.iispl.banksettlement.entity.ReversalTransaction;
+import com.iispl.banksettlement.utility.PhaseLogger;
 import com.iispl.connectionpool.ConnectionPool;
 
 public class SettlementQueueLoader {
+    private static final Logger LOGGER = Logger.getLogger(SettlementQueueLoader.class.getName());
 
 	private static final String SQL_LOAD_INITIATED_CREDITS = "SELECT txn_id, debit_account_id, credit_account_id, credit_account_number, "
 			+ "amount, currency, txn_date, value_date, status, reference_number, txn_type "
@@ -37,17 +40,18 @@ public class SettlementQueueLoader {
 
 		int count = 0;
 
-		System.out.println("[SettlementEngine] Loading INITIATED transactions from DB...");
+        PhaseLogger.getLogger().info("Loading INITIATED transactions from DB...");
 
 		// ---- credit_transaction: CBS, NEFT, UPI, FT channels ----
-		count += loadCreditsForChannel(queue, "CBS-", "CBS");
-		count += loadCreditsForChannel(queue, "NEFT-", "NEFT");
-		count += loadCreditsForChannel(queue, "UPI-", "UPI");
+		// CbsAdapter uses refs like C001, NeftAdapter uses NEFT..., UpiAdapter uses UPI...
+		count += loadCreditsForChannel(queue, "C", "CBS");
+		count += loadCreditsForChannel(queue, "NEFT", "NEFT");
+		count += loadCreditsForChannel(queue, "UPI", "UPI");
 		count += loadCreditsForChannel(queue, "FT-", "FT");
 
 		// ---- debit_transaction: CBS, NEFT, FT channels ----
-		count += loadDebitsForChannel(queue, "CBS-", "CBS");
-		count += loadDebitsForChannel(queue, "NEFT-", "NEFT");
+		count += loadDebitsForChannel(queue, "C", "CBS");
+		count += loadDebitsForChannel(queue, "NEFT", "NEFT");
 		count += loadDebitsForChannel(queue, "FT-", "FT");
 
 		// ---- interbank_transaction: always RTGS channel ----
@@ -56,7 +60,7 @@ public class SettlementQueueLoader {
 		// ---- reversal_transaction: always FT channel ----
 		count += loadReversalTransactions(queue);
 
-		System.out.println("[SettlementEngine] Total items loaded onto queue: " + count);
+        PhaseLogger.getLogger().info("Total INITIATED items loaded: " + count);
 		return count;
 	}
 
@@ -78,8 +82,6 @@ public class SettlementQueueLoader {
 				SettlementItem item = SettlementItem.ofCredit(channel, txn, incomingTxnId);
 				queue.put(item);
 				count++;
-				System.out.println("[SettlementEngine] Queued CREDIT [" + channel + "] | ref: "
-						+ txn.getReferenceNumber() + " | amount: " + txn.getAmount());
 			}
 		} catch (SQLException e) {
 			throw new RuntimeException("loadCreditsForChannel() failed for prefix: " + prefix + " | " + e.getMessage(),
@@ -110,8 +112,6 @@ public class SettlementQueueLoader {
 				SettlementItem item = SettlementItem.ofDebit(channel, txn, incomingTxnId);
 				queue.put(item);
 				count++;
-				System.out.println("[SettlementEngine] Queued DEBIT [" + channel + "] | ref: "
-						+ txn.getReferenceNumber() + " | amount: " + txn.getAmount());
 			}
 		} catch (SQLException e) {
 			throw new RuntimeException("loadDebitsForChannel() failed for prefix: " + prefix + " | " + e.getMessage(),
@@ -141,8 +141,6 @@ public class SettlementQueueLoader {
 				SettlementItem item = SettlementItem.ofInterbank("RTGS", txn, incomingTxnId);
 				queue.put(item);
 				count++;
-				System.out.println("[SettlementEngine] Queued INTERBANK [RTGS] | ref: " + txn.getReferenceNumber()
-						+ " | amount: " + txn.getAmount() + " | correspondent: " + txn.getCorrespondentBankCode());
 			}
 		} catch (SQLException e) {
 			throw new RuntimeException("loadInterbankTransactions() failed: " + e.getMessage(), e);
@@ -171,8 +169,6 @@ public class SettlementQueueLoader {
 				SettlementItem item = SettlementItem.ofReversal("FT", txn, incomingTxnId);
 				queue.put(item);
 				count++;
-				System.out.println("[SettlementEngine] Queued REVERSAL [FT] | ref: " + txn.getReferenceNumber()
-						+ " | amount: " + txn.getAmount() + " | originalRef: " + txn.getOriginalTxnRef());
 			}
 		} catch (SQLException e) {
 			throw new RuntimeException("loadReversalTransactions() failed: " + e.getMessage(), e);
@@ -212,8 +208,7 @@ public class SettlementQueueLoader {
 				return rs.getLong("incoming_txn_id");
 			return 0L;
 		} catch (SQLException e) {
-			System.out.println(
-					"[SettlementEngine] Could not find incoming_txn_id for ref: " + sourceRef + " | " + e.getMessage());
+            PhaseLogger.getLogger().warning("Could not find incoming_txn_id for ref: " + sourceRef + " | " + e.getMessage());
 			return 0L;
 		} finally {
 			closeResources(rs, ps, conn);

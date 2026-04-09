@@ -10,6 +10,7 @@ import com.iispl.banksettlement.enums.SourceType;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.logging.Logger;
 
 /**
  * AdapterRegistry — holds one TransactionAdapter per SourceType.
@@ -19,6 +20,7 @@ import java.util.Map;
  * Registered sources: CBS, RTGS, NEFT, UPI, FINTECH.
  */
 public class AdapterRegistry {
+	private static final Logger LOGGER = Logger.getLogger(AdapterRegistry.class.getName());
 
 	private final Map<SourceType, TransactionAdapter> adapterMap;
 
@@ -30,7 +32,7 @@ public class AdapterRegistry {
 		registerAdapter(new UpiAdapter());
 		registerAdapter(new FintechAdapter());
 
-		System.out.println("AdapterRegistry: Registered adapters for: " + adapterMap.keySet());
+		LOGGER.fine("AdapterRegistry: Registered adapters for: " + adapterMap.keySet());
 	}
 
 	public void registerAdapter(TransactionAdapter adapter) {

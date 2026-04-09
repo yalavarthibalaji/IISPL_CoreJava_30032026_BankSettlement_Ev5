@@ -11,6 +11,7 @@ import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * SettlementBatchDaoImpl — JDBC implementation of SettlementBatchDao.
@@ -34,6 +35,7 @@ import java.util.List;
  *
  */
 public class SettlementBatchDaoImpl implements SettlementBatchDao {
+    private static final Logger LOGGER = Logger.getLogger(SettlementBatchDaoImpl.class.getName());
 
 	@Override
 	public void saveBatch(SettlementBatch batch) {
@@ -67,8 +69,8 @@ public class SettlementBatchDaoImpl implements SettlementBatchDao {
 
 			ps.executeUpdate();
 
-			System.out.println("[SettlementBatchDaoImpl] Batch saved | batchId: " + batch.getBatchId() + " | status: "
-					+ batch.getBatchStatus());
+            LOGGER.fine("[SettlementBatchDaoImpl] Batch saved | batchId: " + batch.getBatchId() + " | status: "
+                    + batch.getBatchStatus());
 
 		} catch (SQLException e) {
 			throw new RuntimeException("SettlementBatchDaoImpl.saveBatch() failed for batchId: " + batch.getBatchId()
@@ -107,9 +109,9 @@ public class SettlementBatchDaoImpl implements SettlementBatchDao {
 						"SettlementBatchDaoImpl.updateBatch() — no row found for batchId: " + batch.getBatchId());
 			}
 
-			System.out.println("[SettlementBatchDaoImpl] Batch updated | batchId: " + batch.getBatchId()
-					+ " | finalStatus: " + batch.getBatchStatus() + " | totalTxns: " + batch.getTotalTransactions()
-					+ " | totalAmt: " + batch.getTotalAmount());
+            LOGGER.fine("[SettlementBatchDaoImpl] Batch updated | batchId: " + batch.getBatchId()
+                    + " | finalStatus: " + batch.getBatchStatus() + " | totalTxns: " + batch.getTotalTransactions()
+                    + " | totalAmt: " + batch.getTotalAmount());
 
 		} catch (SQLException e) {
 			throw new RuntimeException("SettlementBatchDaoImpl.updateBatch() failed for batchId: " + batch.getBatchId()
@@ -196,9 +198,9 @@ public class SettlementBatchDaoImpl implements SettlementBatchDao {
 			}
 			keys.close();
 
-			System.out.println("[SettlementBatchDaoImpl] Record saved | recordId: " + record.getRecordId()
-					+ " | batchId: " + record.getBatchId() + " | incomingTxnId: " + record.getIncomingTxnId()
-					+ " | status: " + record.getSettledStatus() + " | amount: " + record.getSettledAmount());
+            LOGGER.fine("[SettlementBatchDaoImpl] Record saved | recordId: " + record.getRecordId()
+                    + " | batchId: " + record.getBatchId() + " | incomingTxnId: " + record.getIncomingTxnId()
+                    + " | status: " + record.getSettledStatus() + " | amount: " + record.getSettledAmount());
 
 		} catch (SQLException e) {
 			throw new RuntimeException("SettlementBatchDaoImpl.saveRecord() failed: " + e.getMessage(), e);

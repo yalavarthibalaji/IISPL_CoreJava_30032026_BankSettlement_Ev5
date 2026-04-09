@@ -8,6 +8,7 @@ import com.iispl.connectionpool.ConnectionPool;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * ReconciliationEntryDaoImpl — JDBC implementation for reconciliation_entry table.
@@ -20,6 +21,7 @@ import java.util.List;
  *       (not the customer account table).
  */
 public class ReconciliationEntryDaoImpl implements ReconciliationEntryDao {
+    private static final Logger LOGGER = Logger.getLogger(ReconciliationEntryDaoImpl.class.getName());
 
     private static final String SQL_INSERT =
             "INSERT INTO reconciliation_entry " +
@@ -52,7 +54,7 @@ public class ReconciliationEntryDaoImpl implements ReconciliationEntryDao {
             if (keys.next()) entry.setEntryId(keys.getLong(1));
             keys.close();
 
-            System.out.println("[ReconciliationEntryDao] Saved | entryId: " + entry.getEntryId()
+            LOGGER.fine("[ReconciliationEntryDao] Saved | entryId: " + entry.getEntryId()
                     + " | bank: " + entry.getBankName()
                     + " | expected: " + entry.getExpectedAmount()
                     + " | actual: " + entry.getActualAmount()

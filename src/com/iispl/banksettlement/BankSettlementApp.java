@@ -14,15 +14,21 @@ import com.iispl.banksettlement.threading.IngestionPipeline;
 import com.iispl.banksettlement.threading.TransactionDispatcher;
 import com.iispl.banksettlement.utility.CsvFileReader;
 import com.iispl.banksettlement.utility.JsonFileReader;
+import com.iispl.banksettlement.utility.PhaseLogger;
 import com.iispl.banksettlement.utility.TxtFileReader;
 import com.iispl.banksettlement.utility.XmlFileReader;
 import com.iispl.connectionpool.ConnectionPool;
 
 import java.io.IOException;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 //
 /**
@@ -70,15 +76,17 @@ public class BankSettlementApp {
     // Path to test files — relative to Eclipse project root
     private static final String FILE_BASE_PATH =
             "src/com/iispl/banksettlement/testfiles/";
+    private static final Logger APP_LOGGER = Logger.getLogger(BankSettlementApp.class.getName());
 
     public static void main(String[] args) {
+        System.setProperty("org.slf4j.simpleLogger.log.com.zaxxer.hikari", "warn");
+        PhaseLogger.configureReadableConsole(APP_LOGGER);
+        Logger.getLogger("com.zaxxer.hikari").setLevel(Level.WARNING);
 
         Scanner scanner = new Scanner(System.in);
         int choice = -1;
 
-        System.out.println("╔══════════════════════════════════════════════╗");
-        System.out.println("║     BANK SETTLEMENT SYSTEM — MAIN MENU       ║");
-        System.out.println("╚══════════════════════════════════════════════╝");
+        APP_LOGGER.info("BANK SETTLEMENT SYSTEM - MAIN MENU");
 
         do {
             printMenu();
@@ -86,7 +94,7 @@ public class BankSettlementApp {
             String input = scanner.nextLine().trim();
 
             if (!input.matches("[0-9]+")) {
-                System.out.println("\n[App] Invalid input. Please enter a number.\n");
+                APP_LOGGER.warning("Invalid input. Please enter a number.");
                 continue;
             }
 
@@ -109,21 +117,21 @@ public class BankSettlementApp {
                     runReconciliation();
                     break;
                 case 6:
-                    System.out.println("\n[App] Running FULL PIPELINE...\n");
+                    APP_LOGGER.info("Running FULL PIPELINE...");
                     runIngestion();
                     runDispatch();
                     runSettlement();
                     runNetting();
                     runReconciliation();
-                    System.out.println("\n[App] Full pipeline complete.\n");
+                    APP_LOGGER.info("Full pipeline complete.");
                     break;
                 case 0:
-                    System.out.println("\n[App] Exiting. Closing connection pool...");
+                    APP_LOGGER.info("Exiting. Closing connection pool...");
                     ConnectionPool.shutdown();
-                    System.out.println("[App] Goodbye!");
+                    APP_LOGGER.info("Goodbye!");
                     break;
                 default:
-                    System.out.println("\n[App] Unknown option. Please choose 0-6.\n");
+                    APP_LOGGER.warning("Unknown option. Please choose 0-6.");
             }
 
         } while (choice != 0);
@@ -136,16 +144,7 @@ public class BankSettlementApp {
     // -----------------------------------------------------------------------
 
     private static void printMenu() {
-        System.out.println("\n┌──────────────────────────────────────────────┐");
-        System.out.println("│  MENU                                        │");
-        System.out.println("│  1. Ingest transaction files                 │");
-        System.out.println("│  2. Dispatch transactions                    │");
-        System.out.println("│  3. Run settlement engine                    │");
-        System.out.println("│  4. Run netting engine                       │");
-        System.out.println("│  5. Run reconciliation                       │");
-        System.out.println("│  6. Run full pipeline (1+2+3+4+5)            │");
-        System.out.println("│  0. Exit                                     │");
-        System.out.println("└──────────────────────────────────────────────┘");
+        APP_LOGGER.info("MENU: 1-Ingestion, 2-Dispatch, 3-Settlement, 4-Netting, 5-Reconciliation, 6-Full Pipeline, 0-Exit");
     }
 
     // -----------------------------------------------------------------------
@@ -153,10 +152,8 @@ public class BankSettlementApp {
     // -----------------------------------------------------------------------
 
     private static void runIngestion() {
-        System.out.println("\n================================================");
-        System.out.println("  STEP 1 — FILE INGESTION");
-        System.out.println("================================================\n");
-        try {
+        try (PhaseLogger.PhaseLogContext ignored = PhaseLogger.startPhase("phase1_ingestion", "STEP 1 - FILE INGESTION")) {
+            Logger logger = PhaseLogger.getLogger();
             IngestionPipeline pipeline = new IngestionPipeline();
 
             ingestFile(pipeline, SourceType.CBS,
@@ -170,31 +167,31 @@ public class BankSettlementApp {
             ingestFile(pipeline, SourceType.FINTECH,
                     FILE_BASE_PATH + "fintech_transactions.json", new JsonFileReader("FINTECH_JSON"));
 
-            System.out.println("\n[Ingestion] All files submitted. Waiting for workers...");
+            logger.info("All files submitted. Waiting for workers to finish.");
             pipeline.shutdownExecutorOnly();
-            System.out.println("[Ingestion] Done.\n");
+            logger.info("Ingestion completed successfully.");
 
         } catch (Exception e) {
-            System.out.println("\n[Ingestion] ERROR: " + e.getMessage());
-            e.printStackTrace();
+            PhaseLogger.getLogger().log(Level.SEVERE, "Ingestion failed: " + e.getMessage(), e);
         }
     }
 
     private static void ingestFile(IngestionPipeline pipeline, SourceType sourceType,
             String filePath, com.iispl.banksettlement.utility.TransactionFileReader reader) {
-        System.out.println("--- Reading [" + reader.getSourceFormat() + "] from: " + filePath + " ---");
+        Logger logger = PhaseLogger.getLogger();
+        logger.info("Reading " + reader.getSourceFormat() + " file: " + filePath);
         List<String> payloads;
         try {
             payloads = reader.readLines(filePath);
         } catch (IOException e) {
-            System.out.println("[Ingestion] ERROR reading file: " + filePath + " | " + e.getMessage());
+            logger.log(Level.SEVERE, "Error reading file: " + filePath + " | " + e.getMessage(), e);
             return;
         }
         if (payloads.isEmpty()) {
-            System.out.println("[Ingestion] WARNING — no records in: " + filePath);
+            logger.warning("No records found in file: " + filePath);
             return;
         }
-        System.out.println("[Ingestion] Submitting " + payloads.size() + " record(s)...");
+        logger.info("Submitting " + payloads.size() + " records from " + sourceType.name() + ".");
         for (String rawPayload : payloads) {
             pipeline.ingest(sourceType, rawPayload);
         }
@@ -205,19 +202,19 @@ public class BankSettlementApp {
     // -----------------------------------------------------------------------
 
     private static void runDispatch() {
-        System.out.println("\n================================================");
-        System.out.println("  STEP 2 — TRANSACTION DISPATCH");
-        System.out.println("================================================\n");
-        try {
+        try (PhaseLogger.PhaseLogContext ignored = PhaseLogger.startPhase("phase2_dispatch", "STEP 2 - TRANSACTION DISPATCH")) {
+            Logger logger = PhaseLogger.getLogger();
+            int queuedInIncomingTable = countByStatus("incoming_transaction", "processing_status", "QUEUED");
+            logger.info("Incoming QUEUED records before dispatch: " + queuedInIncomingTable);
             IncomingTransactionDao dao   = new IncomingTransactionDaoImpl();
             List<IncomingTransaction> txns = dao.findByStatus(ProcessingStatus.QUEUED);
 
             if (txns.isEmpty()) {
-                System.out.println("[Dispatch] No QUEUED transactions found. Run Ingestion first.");
+                logger.info("No QUEUED transactions found. Run ingestion first.");
                 return;
             }
 
-            System.out.println("[Dispatch] Found " + txns.size() + " QUEUED transaction(s).");
+            logger.info("Found " + txns.size() + " QUEUED transactions.");
             BlockingQueue<IncomingTransaction> queue = new LinkedBlockingQueue<>(500);
 
             for (IncomingTransaction txn : txns) {
@@ -240,11 +237,16 @@ public class BankSettlementApp {
                 Thread.currentThread().interrupt();
             }
 
-            System.out.println("\n[Dispatch] Done.\n");
+            int initiatedCredits = countByStatus("credit_transaction", "status", "INITIATED");
+            int initiatedDebits = countByStatus("debit_transaction", "status", "INITIATED");
+            int initiatedInterbank = countByStatus("interbank_transaction", "status", "INITIATED");
+            int initiatedReversal = countByStatus("reversal_transaction", "status", "INITIATED");
+            logger.info("Dispatch output -> CREDIT: " + initiatedCredits + ", DEBIT: " + initiatedDebits
+                    + ", INTERBANK: " + initiatedInterbank + ", REVERSAL: " + initiatedReversal);
+            logger.info("Dispatch completed successfully.");
 
         } catch (Exception e) {
-            System.out.println("\n[Dispatch] ERROR: " + e.getMessage());
-            e.printStackTrace();
+            PhaseLogger.getLogger().log(Level.SEVERE, "Dispatch failed: " + e.getMessage(), e);
         }
     }
 
@@ -253,16 +255,13 @@ public class BankSettlementApp {
     // -----------------------------------------------------------------------
 
     private static void runSettlement() {
-        System.out.println("\n================================================");
-        System.out.println("  STEP 3 — SETTLEMENT ENGINE");
-        System.out.println("================================================\n");
-        try {
+        try (PhaseLogger.PhaseLogContext ignored = PhaseLogger.startPhase("phase3_settlement", "STEP 3 - SETTLEMENT ENGINE")) {
+            Logger logger = PhaseLogger.getLogger();
             SettlementEngineImpl engine = new SettlementEngineImpl();
             engine.runSettlement();
-            System.out.println("\n[Settlement] Done.\n");
+            logger.info("Settlement completed successfully.");
         } catch (Exception e) {
-            System.out.println("\n[Settlement] ERROR: " + e.getMessage());
-            e.printStackTrace();
+            PhaseLogger.getLogger().log(Level.SEVERE, "Settlement failed: " + e.getMessage(), e);
         }
     }
 
@@ -271,16 +270,13 @@ public class BankSettlementApp {
     // -----------------------------------------------------------------------
 
     private static void runNetting() {
-        System.out.println("\n================================================");
-        System.out.println("  STEP 4 — NETTING ENGINE");
-        System.out.println("================================================\n");
-        try {
+        try (PhaseLogger.PhaseLogContext ignored = PhaseLogger.startPhase("phase4_netting", "STEP 4 - NETTING ENGINE")) {
+            Logger logger = PhaseLogger.getLogger();
             NettingServiceImpl nettingService = new NettingServiceImpl();
             List<NettingPosition> positions = nettingService.runNetting();
-            System.out.println("\n[Netting] Done. Positions computed: " + positions.size() + "\n");
+            logger.info("Netting completed. Positions computed: " + positions.size());
         } catch (Exception e) {
-            System.out.println("\n[Netting] ERROR: " + e.getMessage());
-            e.printStackTrace();
+            PhaseLogger.getLogger().log(Level.SEVERE, "Netting failed: " + e.getMessage(), e);
         }
     }
 
@@ -289,16 +285,29 @@ public class BankSettlementApp {
     // -----------------------------------------------------------------------
 
     private static void runReconciliation() {
-        System.out.println("\n================================================");
-        System.out.println("  STEP 5 — RECONCILIATION");
-        System.out.println("================================================\n");
-        try {
+        try (PhaseLogger.PhaseLogContext ignored = PhaseLogger.startPhase("phase5_reconciliation", "STEP 5 - RECONCILIATION")) {
+            Logger logger = PhaseLogger.getLogger();
             ReconciliationServiceImpl reconService = new ReconciliationServiceImpl();
             List<ReconciliationEntry> entries = reconService.runReconciliation();
-            System.out.println("\n[Reconciliation] Done. Entries created: " + entries.size() + "\n");
+            logger.info("Reconciliation completed. Entries created: " + entries.size());
         } catch (Exception e) {
-            System.out.println("\n[Reconciliation] ERROR: " + e.getMessage());
-            e.printStackTrace();
+            PhaseLogger.getLogger().log(Level.SEVERE, "Reconciliation failed: " + e.getMessage(), e);
         }
+    }
+
+    private static int countByStatus(String tableName, String statusColumn, String status) {
+        String sql = "SELECT COUNT(*) FROM " + tableName + " WHERE " + statusColumn + " = ?";
+        try (Connection conn = ConnectionPool.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, status);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+            }
+        } catch (Exception e) {
+            APP_LOGGER.warning("Could not count status for table " + tableName + ": " + e.getMessage());
+        }
+        return 0;
     }
 }
