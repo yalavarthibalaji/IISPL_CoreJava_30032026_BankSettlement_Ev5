@@ -2,167 +2,125 @@ package com.iispl.banksettlement.entity;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
-
+//
 /**
- * Npci — Represents the NPCI (National Payments Corporation of India) entity.
+ * Npci — Represents NPCI (National Payments Corporation of India).
  *
- * NPCI is the central clearing house that:
- *  1. Holds settlement accounts for all member banks (List<BankAccount>).
- *  2. After netting is done, it updates each bank's balance based on
- *     net obligations (who pays whom how much).
+ * NPCI is the central clearing house. It:
+ *   1. HAS-A List<NpciMemberAccount> — one account per member bank.
+ *   2. Applies netting positions to update each bank's account balance.
  *
- * HOW IT WORKS:
- *  - NettingEngine produces a List<NettingResult> — each result says
- *    "Bank A must pay X amount to Bank B".
- *  - NPCI.applyNettingResults(results) is then called.
- *  - For each NettingResult:
- *      fromBank's balance is DEBITED by netAmount  (they pay)
- *      toBank's   balance is CREDITED by netAmount (they receive)
+ * IMPORTANT:
+ *   - This entity is NOT stored in the DB as a table.
+ *   - It is a Java object that holds the loaded NpciMemberAccount list in memory.
+ *   - The NpciMemberAccount objects are loaded from and saved to npci_bank_account table.
  *
- * HAS-A List<BankAccount> — composition.
- *   NPCI holds all bank settlement accounts.
+ * HOW IT WORKS IN CODE:
+ *   NettingServiceImpl loads all NpciMemberAccount rows from DB into this object.
+ *   Then it calls applyNettingPositions() to update the balances.
+ *   Then it saves the updated NpciMemberAccount rows back to DB.
  */
 public class Npci {
 
-    // The name of this NPCI entity
+    // The name of the clearing house
     private String name;
 
-    // HAS-A: List of all member bank settlement accounts
-    // This is the composition relationship
-    private List<BankAccount> bankAccounts;
+    // HAS-A composition: NPCI holds settlement accounts for all 5 member banks
+    private List<NpciMemberAccount> memberAccounts;
 
     // -----------------------------------------------------------------------
     // Constructors
     // -----------------------------------------------------------------------
 
-    /**
-     * Default constructor. Initializes with the standard NPCI name
-     * and an empty bank account list.
-     */
     public Npci() {
         this.name = "NPCI - National Payments Corporation of India";
-        this.bankAccounts = new ArrayList<>();
-        initDefaultBankAccounts();
     }
 
-    /**
-     * Custom constructor for testing with specific accounts.
-     */
-    public Npci(String name, List<BankAccount> bankAccounts) {
-        this.name = name;
-        this.bankAccounts = bankAccounts;
+    public Npci(List<NpciMemberAccount> memberAccounts) {
+        this.name           = "NPCI - National Payments Corporation of India";
+        this.memberAccounts = memberAccounts;
     }
 
     // -----------------------------------------------------------------------
-    // Initialize default bank accounts (the 5 banks in our system)
+    // Core method: apply netting positions to update bank balances
     // -----------------------------------------------------------------------
 
     /**
-     * Sets up the default NPCI settlement accounts for all 5 member banks
-     * that participate in our settlement system.
+     * Applies all netting positions to update the NPCI member account balances
+     * in memory. After this method, call the DAO to persist the updated balances.
      *
-     * Opening balances are set to represent pre-funded clearing balances.
+     * For each NettingPosition:
+     *   fromBank's balance is DEBITED  (they pay net amount)
+     *   toBank's  balance is CREDITED  (they receive net amount)
+     *
+     * Only NET_DEBIT positions are processed here. Each NET_DEBIT means:
+     *   fromBank pays netAmount to toBank.
+     *
+     * @param positions List of NettingPosition computed by NettingEngine
      */
-    private void initDefaultBankAccounts() {
-        bankAccounts.add(new BankAccount("HDFC Bank",  new BigDecimal("10000000.00")));
-        bankAccounts.add(new BankAccount("SBI Bank",   new BigDecimal("10000000.00")));
-        bankAccounts.add(new BankAccount("ICICI Bank", new BigDecimal("10000000.00")));
-        bankAccounts.add(new BankAccount("Axis Bank",  new BigDecimal("10000000.00")));
-        bankAccounts.add(new BankAccount("Kotak Bank", new BigDecimal("10000000.00")));
-    }
+    public void applyNettingPositions(List<NettingPosition> positions) {
 
-    // -----------------------------------------------------------------------
-    // Core method — Apply netting results to update bank balances
-    // -----------------------------------------------------------------------
-
-    /**
-     * Applies all netting results to update the bank settlement account balances.
-     *
-     * For each NettingResult:
-     *   - The fromBank's balance is DEBITED (they are paying)
-     *   - The toBank's balance is CREDITED (they are receiving)
-     *
-     * After this method runs, each BankAccount reflects the post-settlement balance.
-     *
-     * @param results List of NettingResult from the NettingEngine
-     */
-    public void applyNettingResults(List<NettingResult> results) {
         System.out.println("\n================================================");
-        System.out.println("  NPCI — APPLYING NETTING RESULTS");
-        System.out.println("  Settlement Date: " + LocalDate.now());
+        System.out.println("  NPCI — APPLYING NETTING POSITIONS TO ACCOUNTS");
+        System.out.println("  Date: " + LocalDate.now());
         System.out.println("================================================");
 
-        if (results == null || results.isEmpty()) {
-            System.out.println("[NPCI] No netting results to apply.");
+        if (positions == null || positions.isEmpty()) {
+            System.out.println("[NPCI] No netting positions to apply.");
             return;
         }
 
         System.out.println("\n[NPCI] Pre-settlement balances:");
         printAllBalances();
 
-        System.out.println("\n[NPCI] Applying " + results.size() + " netting result(s)...\n");
+        for (NettingPosition position : positions) {
+            // Only apply NET_DEBIT positions (fromBank pays toBank)
+            // NET_CREDIT means the opposite direction already covered
+            if (position.getDirection() == com.iispl.banksettlement.enums.NetDirection.NET_DEBIT
+                    && position.getNetAmount().compareTo(BigDecimal.ZERO) > 0) {
 
-        for (NettingResult result : results) {
-            applyOneResult(result);
+                NpciMemberAccount fromAccount = findByBankName(position.getFromBankName());
+                NpciMemberAccount toAccount   = findByBankName(position.getToBankName());
+
+                if (fromAccount == null) {
+                    System.out.println("[NPCI] WARNING: NPCI account not found for bank: "
+                            + position.getFromBankName() + " — skipping.");
+                    continue;
+                }
+                if (toAccount == null) {
+                    System.out.println("[NPCI] WARNING: NPCI account not found for bank: "
+                            + position.getToBankName() + " — skipping.");
+                    continue;
+                }
+
+                BigDecimal netAmt = position.getNetAmount().abs();
+
+                fromAccount.debit(netAmt);
+                toAccount.credit(netAmt);
+
+                System.out.println("[NPCI] APPLIED: " + position.getFromBankName()
+                        + " paid Rs. " + String.format("%,.2f", netAmt)
+                        + " to " + position.getToBankName());
+            }
         }
 
         System.out.println("\n[NPCI] Post-settlement balances:");
         printAllBalances();
-
-        System.out.println("\n[NPCI] Settlement complete.");
         System.out.println("================================================\n");
     }
 
-    /**
-     * Applies one netting result:
-     *   fromBank pays netAmount → fromBank balance decreases
-     *   toBank receives netAmount → toBank balance increases
-     */
-    private void applyOneResult(NettingResult result) {
-        BankAccount fromAccount = findBankAccount(result.getFromBank());
-        BankAccount toAccount   = findBankAccount(result.getToBank());
-
-        if (fromAccount == null) {
-            System.out.println("[NPCI] WARNING — Bank account not found for: " + result.getFromBank()
-                    + " | Skipping this netting result.");
-            return;
-        }
-        if (toAccount == null) {
-            System.out.println("[NPCI] WARNING — Bank account not found for: " + result.getToBank()
-                    + " | Skipping this netting result.");
-            return;
-        }
-
-        BigDecimal amount = result.getNetAmount();
-
-        // Debit from fromBank
-        fromAccount.debit(amount);
-
-        // Credit to toBank
-        toAccount.credit(amount);
-
-        System.out.println("[NPCI] SETTLED: "
-                + result.getFromBank() + " → paid Rs. " + amount
-                + " → to → " + result.getToBank()
-                + " | New " + result.getFromBank() + " balance: " + fromAccount.getBalance()
-                + " | New " + result.getToBank() + " balance: " + toAccount.getBalance());
-    }
-
     // -----------------------------------------------------------------------
-    // Helper methods
+    // Helper: find a member account by bank name
     // -----------------------------------------------------------------------
 
     /**
-     * Finds a BankAccount by bank name. Returns null if not found.
-     *
-     * @param bankName The bank name to search for
-     * @return BankAccount if found, null otherwise
+     * Finds an NpciMemberAccount by the bank's name.
+     * Returns null if not found.
      */
-    public BankAccount findBankAccount(String bankName) {
-        if (bankName == null) return null;
-        for (BankAccount account : bankAccounts) {
+    public NpciMemberAccount findByBankName(String bankName) {
+        if (bankName == null || memberAccounts == null) return null;
+        for (NpciMemberAccount account : memberAccounts) {
             if (bankName.equalsIgnoreCase(account.getBankName())) {
                 return account;
             }
@@ -171,24 +129,18 @@ public class Npci {
     }
 
     /**
-     * Adds a new bank account to NPCI's list.
-     * Use this if a new member bank joins.
-     */
-    public void addBankAccount(BankAccount account) {
-        if (account != null) {
-            bankAccounts.add(account);
-        }
-    }
-
-    /**
-     * Prints all bank account balances in a table format.
+     * Prints all member account balances in a neat table.
      */
     public void printAllBalances() {
-        System.out.println(String.format("  %-20s %s", "Bank Name", "Balance (INR)"));
-        System.out.println("  " + "-".repeat(40));
-        for (BankAccount account : bankAccounts) {
-            System.out.println(String.format("  %-20s %,.2f",
-                    account.getBankName(), account.getBalance()));
+        System.out.println(String.format("  %-20s  %20s  %20s", "Bank", "Opening Balance", "Current Balance"));
+        System.out.println("  " + "-".repeat(65));
+        if (memberAccounts != null) {
+            for (NpciMemberAccount account : memberAccounts) {
+                System.out.println(String.format("  %-20s  %20.2f  %20.2f",
+                        account.getBankName(),
+                        account.getOpeningBalance(),
+                        account.getCurrentBalance()));
+            }
         }
     }
 
@@ -196,28 +148,11 @@ public class Npci {
     // Getters and Setters
     // -----------------------------------------------------------------------
 
-    public String getName() {
-        return name;
-    }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
 
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public List<BankAccount> getBankAccounts() {
-        return bankAccounts;
-    }
-
-    public void setBankAccounts(List<BankAccount> bankAccounts) {
-        this.bankAccounts = bankAccounts;
-    }
-
-    // -----------------------------------------------------------------------
-    // toString
-    // -----------------------------------------------------------------------
-
-    @Override
-    public String toString() {
-        return "Npci{name='" + name + "', bankAccounts=" + bankAccounts + '}';
+    public List<NpciMemberAccount> getMemberAccounts() { return memberAccounts; }
+    public void setMemberAccounts(List<NpciMemberAccount> memberAccounts) {
+        this.memberAccounts = memberAccounts;
     }
 }

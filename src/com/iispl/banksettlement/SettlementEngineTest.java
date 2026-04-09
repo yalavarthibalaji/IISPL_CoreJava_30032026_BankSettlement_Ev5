@@ -93,7 +93,6 @@ public class SettlementEngineTest {
 			System.out.println("\n[SettlementEngineTest] FATAL ERROR: " + e.getMessage());
 			e.printStackTrace();
 		} finally {
-			// Always close the connection pool
 			ConnectionPool.shutdown();
 			System.out.println("[SettlementEngineTest] Connection pool closed.");
 		}

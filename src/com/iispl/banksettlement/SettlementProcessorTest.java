@@ -53,20 +53,15 @@ import java.util.concurrent.LinkedBlockingQueue;
  * reversal_transaction: new rows for every REVERSAL incoming txn. -
  * interbank_transaction: new rows for every INTRABANK incoming txn.
  *
- * PACKAGE: com.iispl.banksettlement
  */
 public class SettlementProcessorTest {
-
-	// -----------------------------------------------------------------------
-	// CONFIGURE: Choose which mode to run
-	// -----------------------------------------------------------------------
 
 	// MODE_A = load QUEUED records from DB and dispatch (no file re-ingestion)
 	// MODE_B = ingest new test files first, then dispatch
 	private static final String RUN_MODE = "MODE_A";
 
 	// -----------------------------------------------------------------------
-	// CONFIGURE: Path to test files (only needed for MODE_B)
+	//  Path to test files
 	// -----------------------------------------------------------------------
 	private static final String FILE_BASE_PATH = "src/com/iispl/banksettlement/testfiles/";
 
@@ -134,7 +129,6 @@ public class SettlementProcessorTest {
 
 		System.out.println("\n================================================");
 		System.out.println("  MODE A COMPLETE");
-		System.out.println("  Check Supabase:");
 		System.out.println("    credit_transaction    — CREDIT rows");
 		System.out.println("    debit_transaction     — DEBIT rows");
 		System.out.println("    reversal_transaction  — REVERSAL rows");
@@ -166,7 +160,6 @@ public class SettlementProcessorTest {
 		// STEP 2: Wait for all ingestion workers to finish, but do NOT close
 		// ConnectionPool yet.
 		// We call shutdownExecutorOnly() which shuts down the ThreadPoolExecutor
-		// without closing the ConnectionPool — so the dispatcher can still use it.
 		pipeline.shutdownExecutorOnly();
 
 		System.out.println("[SettlementProcessorTest] Ingestion complete. Getting queue from pipeline...");

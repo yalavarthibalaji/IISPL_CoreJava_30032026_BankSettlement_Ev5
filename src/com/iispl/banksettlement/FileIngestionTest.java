@@ -59,39 +59,30 @@ public class FileIngestionTest {
 
 		IngestionPipeline pipeline = new IngestionPipeline();
 
-		// -------------------------------------------------------
 		// 1. CBS — CSV file → CsvFileReader → pipe-delimited → CbsAdapter
-		// -------------------------------------------------------
+
 		ingestFromFile(pipeline, SourceType.CBS, FILE_BASE_PATH + "cbs_transactions.csv", new CsvFileReader());
 
-		// -------------------------------------------------------
 		// 2. RTGS — XML file → XmlFileReader → RTGSMessage blocks → RtgsAdapter
-		// -------------------------------------------------------
+
 		ingestFromFile(pipeline, SourceType.RTGS, FILE_BASE_PATH + "rtgs_transactions.xml", new XmlFileReader());
 
-		// -------------------------------------------------------
 		// 3. NEFT — TXT fixed-width file → TxtFileReader → 132-char records →
-		// NeftAdapter
-		// -------------------------------------------------------
+
 		ingestFromFile(pipeline, SourceType.NEFT, FILE_BASE_PATH + "neft_transactions.txt", new TxtFileReader());
 
-		// -------------------------------------------------------
 		// 4. UPI — JSON file → JsonFileReader → one JSON per line → UpiAdapter
-		// -------------------------------------------------------
+
 		ingestFromFile(pipeline, SourceType.UPI, FILE_BASE_PATH + "upi_transactions.json",
 				new JsonFileReader("UPI_JSON"));
 
-		// -------------------------------------------------------
 		// 5. Fintech — JSON file → JsonFileReader → one JSON per line → FintechAdapter
-		// -------------------------------------------------------
+
 		ingestFromFile(pipeline, SourceType.FINTECH, FILE_BASE_PATH + "fintech_transactions.json",
 				new JsonFileReader("FINTECH_JSON"));
 
-		// -------------------------------------------------------
 		// 6. CBS — XLSX file → XlsxFileReader → pipe-delimited rows → CbsAdapter
-		// REQUIRES Apache POI on classpath.
-		// Comment out this block if POI is not yet added to your project.
-		// -------------------------------------------------------
+
 		ingestFromFile(pipeline, SourceType.CBS, FILE_BASE_PATH + "cbs_transactions.xlsx", new XlsxFileReader());
 
 		System.out.println("\n[FileIngestionTest] All file reads submitted to pipeline.");
@@ -99,15 +90,11 @@ public class FileIngestionTest {
 
 		pipeline.shutdown();
 
-		System.out.println("\n================================================");
 		System.out.println("  FILE INGESTION TEST COMPLETE");
-		System.out.println("  Check Supabase → Table Editor → incoming_transaction");
-		System.out.println("================================================");
+		
 	}
 
-	// -----------------------------------------------------------------------
 	// Helper — reads all payloads from a file and submits each to pipeline
-	// -----------------------------------------------------------------------
 
 	private static void ingestFromFile(IngestionPipeline pipeline, SourceType sourceType, String filePath,
 			com.iispl.banksettlement.utility.TransactionFileReader reader) {
@@ -120,8 +107,6 @@ public class FileIngestionTest {
 			payloads = reader.readLines(filePath);
 		} catch (IOException e) {
 			System.out.println("[FileIngestionTest] ERROR reading file [" + filePath + "]: " + e.getMessage());
-			System.out.println("[FileIngestionTest] >>> Check: Does the file exist at that path?");
-			System.out.println("[FileIngestionTest] >>> Check: Is FILE_BASE_PATH configured correctly?");
 			return;
 		}
 
