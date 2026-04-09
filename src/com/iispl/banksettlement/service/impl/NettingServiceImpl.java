@@ -17,6 +17,7 @@ import java.util.List;
  *   NettingService nettingService = new NettingServiceImpl();
  *   List<NettingPosition> positions = nettingService.runNetting();
  */
+//
 public class NettingServiceImpl implements NettingService {
 
     private final NettingEngine nettingEngine;
