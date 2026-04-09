@@ -1,1 +1,6 @@
 /com/
+bin/
+target/
+build/
+*.class
+/db.properties
