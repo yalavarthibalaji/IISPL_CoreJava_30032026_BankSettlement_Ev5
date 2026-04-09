@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.logging.Logger;
 
 import com.iispl.banksettlement.dao.CreditTransactionDao;
 import com.iispl.banksettlement.dao.DebitTransactionDao;
@@ -20,6 +21,7 @@ import com.iispl.banksettlement.service.SettlementService;
 import com.iispl.banksettlement.settlement.ChannelSettler;
 import com.iispl.banksettlement.settlement.SettlementItem;
 import com.iispl.banksettlement.settlement.SettlementQueueLoader;
+import com.iispl.banksettlement.utility.PhaseLogger;
 
 /**
  * SettlementEngine — Loads SETTLED transactions from DB tables into a
@@ -117,11 +119,8 @@ public class SettlementEngineImpl implements SettlementService {
      */
     @Override
     public void runSettlement() {
-
-        System.out.println("\n================================================");
-        System.out.println("  SETTLEMENT ENGINE — STARTING");
-        System.out.println("  Date: " + LocalDate.now());
-        System.out.println("================================================\n");
+        Logger logger = PhaseLogger.getLogger();
+        logger.info("Settlement engine started on " + LocalDate.now());
 
         // ----------------------------------------------------------------
         // PHASE 1 — PRODUCER: Load all INITIATED transactions from DB
@@ -134,13 +133,11 @@ public class SettlementEngineImpl implements SettlementService {
         int totalLoaded = loadAllTransactionsIntoQueue(queue);
 
         if (totalLoaded == 0) {
-            System.out.println("[SettlementEngine] No INITIATED transactions found in DB.");
-            System.out.println("[SettlementEngine] Run SettlementProcessorTest first.");
+            logger.info("No INITIATED transactions found in DB. Run settlement processor first.");
             return;
         }
 
-        System.out.println(
-                "\n[SettlementEngine] PHASE 1 DONE — Loaded " + totalLoaded + " transaction(s) onto the queue.");
+        logger.info("Phase 1 complete. Loaded " + totalLoaded + " transactions onto queue.");
 
         // Put shutdown sentinel so the consumer knows when to stop
         try {
@@ -157,8 +154,7 @@ public class SettlementEngineImpl implements SettlementService {
         // The consumer Runnable
         Runnable consumer = () -> {
 
-            System.out.println(
-                    "\n[SettlementEngine] PHASE 2 — Consumer thread started: " + Thread.currentThread().getName());
+            logger.info("Phase 2 started. Consumer thread: " + Thread.currentThread().getName());
 
             // 5 channel buckets — each holds the SettlementItems for that channel
             List<SettlementItem> cbsItems = new ArrayList<>();
@@ -174,8 +170,7 @@ public class SettlementEngineImpl implements SettlementService {
 
                     // Shutdown sentinel — stop draining
                     if (item.isShutdown()) {
-                        System.out.println("[SettlementEngine] Shutdown sentinel received. "
-                                + "Queue drained. Starting settlement...");
+                        logger.info("Shutdown sentinel received. Queue drained. Starting settlement.");
                         break;
                     }
 
@@ -197,28 +192,23 @@ public class SettlementEngineImpl implements SettlementService {
                         ftItems.add(item);
                         break;
                     default:
-                        System.out.println("[SettlementEngine] UNKNOWN channel: " + item.getChannel()
-                                + " — skipping item: " + item);
+                        logger.warning("Unknown channel: " + item.getChannel() + ". Skipping item.");
                     }
 
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    System.out.println("[SettlementEngine] Consumer interrupted.");
+                    logger.warning("Consumer interrupted.");
                     break;
                 }
             }
 
-            System.out.println("\n[SettlementEngine] PHASE 2 DONE — Channel bucket sizes:");
-            System.out.println("  CBS:    " + cbsItems.size() + " item(s)");
-            System.out.println("  RTGS:   " + rtgsItems.size() + " item(s)");
-            System.out.println("  NEFT:   " + neftItems.size() + " item(s)");
-            System.out.println("  UPI:    " + upiItems.size() + " item(s)");
-            System.out.println("  FT:     " + ftItems.size() + " item(s)");
+            logger.info("Phase 2 complete. Bucket sizes -> CBS: " + cbsItems.size() + ", RTGS: " + rtgsItems.size()
+                    + ", NEFT: " + neftItems.size() + ", UPI: " + upiItems.size() + ", FT: " + ftItems.size());
 
             // ----------------------------------------------------------------
             // PHASE 3 — SETTLE each channel bucket
             // ----------------------------------------------------------------
-            System.out.println("\n[SettlementEngine] PHASE 3 — Starting batch settlement...");
+            logger.info("Phase 3 started. Running channel settlement.");
 
             if (!cbsItems.isEmpty())
                 channelSettler.settleCbsBatch(cbsItems);
@@ -231,7 +221,7 @@ public class SettlementEngineImpl implements SettlementService {
             if (!ftItems.isEmpty())
                 channelSettler.settleFtBatch(ftItems);
 
-            System.out.println("\n[SettlementEngine] PHASE 3 DONE — All channels settled.");
+            logger.info("Phase 3 complete. All channels settled.");
         };
 
         // Start consumer in a background thread
@@ -245,9 +235,7 @@ public class SettlementEngineImpl implements SettlementService {
             Thread.currentThread().interrupt();
         }
 
-        System.out.println("\n================================================");
-        System.out.println("  SETTLEMENT ENGINE — COMPLETE");
-        System.out.println("================================================\n");
+        logger.info("Settlement engine completed.");
     }
 
     /**

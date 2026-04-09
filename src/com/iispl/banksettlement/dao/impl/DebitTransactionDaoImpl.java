@@ -10,11 +10,13 @@ import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * DebitTransactionDaoImpl — updated with from_bank, to_bank, incoming_txn_id.
  */
 public class DebitTransactionDaoImpl implements DebitTransactionDao {
+    private static final Logger LOGGER = Logger.getLogger(DebitTransactionDaoImpl.class.getName());
 
     @Override
     public void save(DebitTransaction txn) {
@@ -63,7 +65,7 @@ public class DebitTransactionDaoImpl implements DebitTransactionDao {
             if (keys.next()) txn.setTxnId(keys.getLong(1));
             keys.close();
 
-            System.out.println("[DebitTransactionDaoImpl] Saved | txn_id: " + txn.getTxnId()
+            LOGGER.fine("[DebitTransactionDaoImpl] Saved | txn_id: " + txn.getTxnId()
                     + " | ref: " + txn.getReferenceNumber()
                     + " | amount: " + txn.getAmount()
                     + " | fromBank: " + txn.getFromBank()

@@ -10,6 +10,7 @@ import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * CreditTransactionDaoImpl — updated to include from_bank, to_bank, incoming_txn_id.
@@ -20,6 +21,7 @@ import java.util.List;
  *   incoming_txn_id  BIGINT
  */
 public class CreditTransactionDaoImpl implements CreditTransactionDao {
+    private static final Logger LOGGER = Logger.getLogger(CreditTransactionDaoImpl.class.getName());
 
     @Override
     public void save(CreditTransaction txn) {
@@ -70,7 +72,7 @@ public class CreditTransactionDaoImpl implements CreditTransactionDao {
             if (keys.next()) txn.setTxnId(keys.getLong(1));
             keys.close();
 
-            System.out.println("[CreditTransactionDaoImpl] Saved | txn_id: " + txn.getTxnId()
+            LOGGER.fine("[CreditTransactionDaoImpl] Saved | txn_id: " + txn.getTxnId()
                     + " | ref: " + txn.getReferenceNumber()
                     + " | amount: " + txn.getAmount()
                     + " | fromBank: " + txn.getFromBank()

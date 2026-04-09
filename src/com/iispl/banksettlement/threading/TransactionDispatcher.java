@@ -21,7 +21,7 @@ import com.iispl.banksettlement.entity.ReversalTransaction;
 import com.iispl.banksettlement.enums.ProcessingStatus;
 import com.iispl.banksettlement.enums.TransactionStatus;
 import com.iispl.banksettlement.enums.TransactionType;
-import com.iispl.connectionpool.ConnectionPool;
+import com.iispl.banksettlement.utility.PhaseLogger;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -66,9 +66,9 @@ public class TransactionDispatcher implements Runnable {
 
     @Override
     public void run() {
-
-        System.out.println("[TransactionDispatcher] Started. Waiting for transactions...");
-        System.out.println("[TransactionDispatcher] Thread: " + Thread.currentThread().getName());
+        int processed = 0;
+        int failed = 0;
+        PhaseLogger.getLogger().info("Transaction dispatcher started.");
 
         while (!Thread.currentThread().isInterrupted()) {
 
@@ -79,41 +79,35 @@ public class TransactionDispatcher implements Runnable {
 
                 // Shutdown sentinel
                 if ("SHUTDOWN".equals(incoming.getSourceRef())) {
-                    System.out.println("[TransactionDispatcher] Shutdown signal received. Stopping.");
+                    PhaseLogger.getLogger().info("Shutdown signal received.");
                     break;
                 }
 
-                System.out.println("\n[TransactionDispatcher] Dispatching: " + incoming.getSourceRef()
-                        + " | type: " + incoming.getTxnType()
-                        + " | amount: " + incoming.getAmount()
-                        + " | fromBank: " + incoming.getFromBank()
-                        + " | toBank: " + incoming.getToBank());
-
                 dispatch(incoming);
+                processed++;
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                System.out.println("[TransactionDispatcher] Interrupted. Stopping.");
+                PhaseLogger.getLogger().warning("Dispatcher interrupted.");
                 break;
 
             } catch (Exception e) {
-                System.out.println("[TransactionDispatcher] ERROR dispatching: "
+                failed++;
+                PhaseLogger.getLogger().warning("Error dispatching: "
                         + (incoming != null ? incoming.getSourceRef() : "unknown")
                         + " | " + e.getMessage());
-                e.printStackTrace();
 
                 if (incoming != null && incoming.getIncomingTxnId() != null) {
                     try {
                         incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
                     } catch (Exception ex) {
-                        System.out.println("[TransactionDispatcher] Could not mark FAILED: " + ex.getMessage());
+                        PhaseLogger.getLogger().warning("Could not mark FAILED: " + ex.getMessage());
                     }
                 }
             }
         }
 
-        System.out.println("[TransactionDispatcher] Loop ended. Closing connection pool.");
-        ConnectionPool.shutdown();
+        PhaseLogger.getLogger().info("Dispatcher finished. processed=" + processed + ", failed=" + failed);
     }
 
     // -----------------------------------------------------------------------
@@ -147,8 +141,7 @@ public class TransactionDispatcher implements Runnable {
         }
 
         if (debitAccountNum == null || creditAccountNum == null) {
-            System.out.println("[TransactionDispatcher] SKIPPING — missing debitAccount or creditAccount for: "
-                    + incoming.getSourceRef());
+            PhaseLogger.getLogger().warning("Skipping txn due to missing debit/credit account: " + incoming.getSourceRef());
             incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
             return;
         }
@@ -162,20 +155,19 @@ public class TransactionDispatcher implements Runnable {
         if (isUpi) {
             debitAccountId  = 0L;
             creditAccountId = 0L;
-            System.out.println("[TransactionDispatcher] UPI — skipping account lookup for VPA addresses.");
         } else {
             Account debitAccount  = accountDao.findByAccountNumber(debitAccountNum);
             Account creditAccount = accountDao.findByAccountNumber(creditAccountNum);
 
             if (debitAccount == null) {
-                System.out.println("[TransactionDispatcher] FAILED — debit account not found: "
-                        + debitAccountNum + " | ref: " + incoming.getSourceRef());
+                PhaseLogger.getLogger().warning("Failed dispatch. Debit account not found: " + debitAccountNum + " | ref: "
+                        + incoming.getSourceRef());
                 incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
                 return;
             }
             if (creditAccount == null) {
-                System.out.println("[TransactionDispatcher] FAILED — credit account not found: "
-                        + creditAccountNum + " | ref: " + incoming.getSourceRef());
+                PhaseLogger.getLogger().warning("Failed dispatch. Credit account not found: " + creditAccountNum + " | ref: "
+                        + incoming.getSourceRef());
                 incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
                 return;
             }
@@ -207,9 +199,6 @@ public class TransactionDispatcher implements Runnable {
 
                 creditTxnDao.save(credit);
 
-                System.out.println("[TransactionDispatcher] CREDIT saved | txn_id: " + credit.getTxnId()
-                        + " | creditAccount: " + creditAccountNum
-                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
                 break;
             }
 
@@ -225,9 +214,6 @@ public class TransactionDispatcher implements Runnable {
 
                 debitTxnDao.save(debit);
 
-                System.out.println("[TransactionDispatcher] DEBIT saved | txn_id: " + debit.getTxnId()
-                        + " | debitAccount: " + debitAccountNum
-                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
                 break;
             }
 
@@ -244,9 +230,6 @@ public class TransactionDispatcher implements Runnable {
 
                 reversalTxnDao.save(reversal);
 
-                System.out.println("[TransactionDispatcher] REVERSAL saved | txn_id: " + reversal.getTxnId()
-                        + " | originalRef: " + originalTxnRef
-                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
                 break;
             }
 
@@ -265,15 +248,11 @@ public class TransactionDispatcher implements Runnable {
 
                 interbankTxnDao.save(interbank);
 
-                System.out.println("[TransactionDispatcher] INTRABANK saved | txn_id: " + interbank.getTxnId()
-                        + " | correspondent: " + correspondentCode
-                        + " | fromBank: " + fromBank + " | toBank: " + toBank);
                 break;
             }
 
             default: {
-                System.out.println("[TransactionDispatcher] SKIPPING unsupported txnType: "
-                        + txnType + " | ref: " + sourceRef);
+                PhaseLogger.getLogger().warning("Skipping unsupported txnType: " + txnType + " | ref: " + sourceRef);
                 incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.FAILED);
                 return;
             }
@@ -281,8 +260,6 @@ public class TransactionDispatcher implements Runnable {
 
         // Mark IncomingTransaction as PROCESSED
         incomingTxnDao.updateStatus(incoming.getIncomingTxnId(), ProcessingStatus.PROCESSED);
-        System.out.println("[TransactionDispatcher] Marked PROCESSED | incoming_txn_id: "
-                + incoming.getIncomingTxnId());
     }
 
     // -----------------------------------------------------------------------

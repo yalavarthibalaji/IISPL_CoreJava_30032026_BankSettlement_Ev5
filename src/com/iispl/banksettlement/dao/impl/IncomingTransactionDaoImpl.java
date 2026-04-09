@@ -12,6 +12,7 @@ import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * IncomingTransactionDaoImpl — JDBC implementation of IncomingTransactionDao.
@@ -30,6 +31,7 @@ import java.util.List;
  * restore the column mapping in SQL_INSERT with a hardcoded 'INR'.)
  */
 public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
+    private static final Logger LOGGER = Logger.getLogger(IncomingTransactionDaoImpl.class.getName());
 
 	@Override
 	public void save(IncomingTransaction txn) {
@@ -78,8 +80,8 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 			}
 			generatedKeys.close();
 
-			System.out.println("[IncomingTransactionDaoImpl] Saved txn: " + txn.getSourceRef() + " | DB id: "
-					+ txn.getIncomingTxnId());
+            LOGGER.fine("[IncomingTransactionDaoImpl] Saved txn: " + txn.getSourceRef() + " | DB id: "
+                    + txn.getIncomingTxnId());
 
 		} catch (SQLException e) {
 			throw new RuntimeException("IncomingTransactionDaoImpl.save() failed: " + e.getMessage(), e);
@@ -243,7 +245,7 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 		SourceSystem sourceSystem = new SourceSystem();
 		sourceSystem.setSourceSystemId(rs.getLong("source_system_id"));
 		sourceSystem.setSystemCode(rs.getString("system_code"));
-		sourceSystem.setProtocol(ProtocolType.valueOf(rs.getString("protocol")));
+		sourceSystem.setProtocol(parseProtocol(rs.getString("protocol")));
 		sourceSystem.setConnectionConfig(rs.getString("connection_config"));
 		sourceSystem.setActive(rs.getBoolean("is_active"));
 		sourceSystem.setContactEmail(rs.getString("contact_email"));
@@ -274,6 +276,29 @@ public class IncomingTransactionDaoImpl implements IncomingTransactionDao {
 
 		return txn;
 	}
+
+    private ProtocolType parseProtocol(String dbProtocol) {
+        if (dbProtocol == null || dbProtocol.trim().isEmpty()) {
+            return ProtocolType.FLAT_FILE;
+        }
+        String normalized = dbProtocol.trim().toUpperCase();
+        try {
+            return ProtocolType.valueOf(normalized);
+        } catch (IllegalArgumentException ex) {
+            // Accept legacy/source-specific protocol strings in seed data.
+            if (normalized.contains("FILE") || normalized.contains("CSV") || normalized.contains("XML")
+                    || normalized.contains("TXT")) {
+                return ProtocolType.FLAT_FILE;
+            }
+            if (normalized.contains("API") || normalized.contains("JSON")) {
+                return ProtocolType.REST_API;
+            }
+            if (normalized.contains("MQ") || normalized.contains("QUEUE")) {
+                return ProtocolType.MESSAGE_QUEUE;
+            }
+            return ProtocolType.FLAT_FILE;
+        }
+    }
 
 	// -----------------------------------------------------------------------
 	// Resource cleanup

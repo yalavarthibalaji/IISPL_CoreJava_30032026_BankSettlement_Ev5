@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * XmlFileReader — Reads an RTGS XML batch file and extracts each individual
@@ -32,6 +33,7 @@ import java.util.List;
  * do not affect extraction since we key on &lt;RTGSMessage&gt; tags only.
  */
 public class XmlFileReader implements TransactionFileReader {
+    private static final Logger LOGGER = Logger.getLogger(XmlFileReader.class.getName());
 
 	private static final String OPEN_TAG = "<RTGSMessage>";
 	private static final String CLOSE_TAG = "</RTGSMessage>";
@@ -57,8 +59,7 @@ public class XmlFileReader implements TransactionFileReader {
 			// Find the matching closing tag
 			int closeIndex = content.indexOf(CLOSE_TAG, openIndex);
 			if (closeIndex == -1) {
-				System.out.println("[XmlFileReader] WARNING — found <RTGSMessage> at index " + openIndex
-						+ " but no closing </RTGSMessage>. Stopping extraction.");
+                PhaseLogger.getLogger().warning("[XmlFileReader] Unclosed RTGSMessage block. Stopping extraction.");
 				break;
 			}
 
@@ -74,17 +75,11 @@ public class XmlFileReader implements TransactionFileReader {
 
 			recordCount++;
 
-			// Extract sourceRef for logging (MsgId tag)
-			String msgId = extractTagValue(block, "MsgId");
-			System.out.println("[XmlFileReader] Read RTGS record #" + recordCount + " | MsgId: "
-					+ (msgId != null ? msgId : "UNKNOWN"));
-
 			// Move search position past this block
 			searchFrom = blockEnd;
 		}
 
-		System.out.println(
-				"[XmlFileReader] Total RTGS records extracted: " + payloads.size() + " from file: " + filePath);
+        PhaseLogger.getLogger().info("[XmlFileReader] Total RTGS records extracted: " + payloads.size());
 		return payloads;
 	}
 
@@ -93,20 +88,5 @@ public class XmlFileReader implements TransactionFileReader {
 		return "RTGS_XML";
 	}
 
-	/**
-	 * Minimal XML tag extractor — used only for logging the MsgId. Same logic as
-	 * RtgsAdapter.extractXmlTag() for consistency.
-	 */
-	private String extractTagValue(String xml, String tagName) {
-		String open = "<" + tagName + ">";
-		String close = "</" + tagName + ">";
-		int start = xml.indexOf(open);
-		if (start == -1)
-			return null;
-		int valueStart = start + open.length();
-		int end = xml.indexOf(close, valueStart);
-		if (end == -1)
-			return null;
-		return xml.substring(valueStart, end).trim();
-	}
+	// Per-record XML logging intentionally removed to keep console clean.
 }

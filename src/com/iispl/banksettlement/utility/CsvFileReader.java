@@ -5,6 +5,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * CsvFileReader — Reads a CBS CSV transaction file and converts each data row
@@ -32,6 +33,7 @@ import java.util.List;
  * credit|BLR001|EMP4521
  */
 public class CsvFileReader implements TransactionFileReader {
+    private static final Logger LOGGER = Logger.getLogger(CsvFileReader.class.getName());
 
 	// The header columns expected in the CBS CSV file (case-insensitive check)
 	private static final String HEADER_INDICATOR = "CBS_TXN_ID";
@@ -56,23 +58,21 @@ public class CsvFileReader implements TransactionFileReader {
 				}
 
 				// Skip comment lines (start with #)
-				if (trimmed.startsWith("#")) {
-					System.out.println("[CsvFileReader] Skipping comment at line " + lineNumber);
+                if (trimmed.startsWith("#")) {
 					continue;
 				}
 
 				// Skip the header row — identified by the first column name
-				if (trimmed.toUpperCase().startsWith(HEADER_INDICATOR)) {
-					System.out.println("[CsvFileReader] Skipping header at line " + lineNumber);
+                if (trimmed.toUpperCase().startsWith(HEADER_INDICATOR)) {
 					continue;
 				}
 
-				// Split on comma — CBS CSV has exactly 10 fields
+                // Split on comma — CBS CSV has 12 fields in current format.
 				String[] parts = trimmed.split(",", -1);
 
-				if (parts.length < 10) {
-					System.out.println("[CsvFileReader] WARNING — line " + lineNumber + " has only " + parts.length
-							+ " columns (expected 10). Skipping: " + trimmed);
+                if (parts.length < 12) {
+                    PhaseLogger.getLogger().warning("[CsvFileReader] line " + lineNumber + " has only " + parts.length
+                            + " columns (expected 12). Skipping.");
 					continue;
 				}
 
@@ -87,15 +87,15 @@ public class CsvFileReader implements TransactionFileReader {
 						+ "|" + parts[6].trim() // TXN_TYPE
 						+ "|" + parts[7].trim() // NARRATION
 						+ "|" + parts[8].trim() // BRANCH_CODE
-						+ "|" + parts[9].trim(); // MAKER_ID
+                        + "|" + parts[9].trim() // MAKER_ID
+                        + "|" + parts[10].trim() // FROM_BANK
+                        + "|" + parts[11].trim(); // TO_BANK
 
 				payloads.add(pipePayload);
-				System.out.println(
-						"[CsvFileReader] Read CBS record at line " + lineNumber + " | ref: " + parts[0].trim());
 			}
 		}
 
-		System.out.println("[CsvFileReader] Total CBS records read: " + payloads.size() + " from file: " + filePath);
+        PhaseLogger.getLogger().info("[CsvFileReader] Total CBS records read: " + payloads.size());
 		return payloads;
 	}
 

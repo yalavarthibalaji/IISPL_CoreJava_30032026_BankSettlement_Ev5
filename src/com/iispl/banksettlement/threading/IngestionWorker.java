@@ -8,6 +8,7 @@ import com.iispl.banksettlement.enums.SourceType;
 import com.iispl.banksettlement.registry.AdapterRegistry;
 
 import java.util.concurrent.BlockingQueue;
+import java.util.logging.Logger;
 
 /**
  * IngestionWorker — Runnable that adapts one raw payload and puts it on the
@@ -34,20 +35,24 @@ import java.util.concurrent.BlockingQueue;
  * info is now only inside normalizedPayload.
  */
 public class IngestionWorker implements Runnable {
+    private static final Logger LOGGER = Logger.getLogger(IngestionWorker.class.getName());
 
 	private final SourceType sourceType;
 	private final String rawPayload;
 	private final AdapterRegistry adapterRegistry;
 	private final BlockingQueue<IncomingTransaction> blockingQueue;
 	private final IncomingTransactionDao incomingTransactionDao;
+    private final IngestionPipeline.SourceStats sourceStats;
 
 	public IngestionWorker(SourceType sourceType, String rawPayload, AdapterRegistry adapterRegistry,
-			BlockingQueue<IncomingTransaction> blockingQueue, IncomingTransactionDao incomingTransactionDao) {
+			BlockingQueue<IncomingTransaction> blockingQueue, IncomingTransactionDao incomingTransactionDao,
+            IngestionPipeline.SourceStats sourceStats) {
 		this.sourceType = sourceType;
 		this.rawPayload = rawPayload;
 		this.adapterRegistry = adapterRegistry;
 		this.blockingQueue = blockingQueue;
 		this.incomingTransactionDao = incomingTransactionDao;
+        this.sourceStats = sourceStats;
 	}
 
 	@Override
@@ -60,16 +65,14 @@ public class IngestionWorker implements Runnable {
 			// adapt raw payload → IncomingTransaction
 			TransactionAdapter adapter = adapterRegistry.getAdapter(sourceType);
 			IncomingTransaction txn = adapter.adapt(rawPayload);
-
-			System.out.println("Adapted txn: " + txn.getSourceRef() + " | Amount: " + txn.getAmount() + " | Source: "
-					+ sourceType);
+            sourceStats.adapted.incrementAndGet();
 
 			
 			
 			
 			// checks for duplicate transactions
 			if (incomingTransactionDao.existsBySourceRef(txn.getSourceRef())) {
-				System.out.println("DUPLICATE detected — skipping sourceRef: " + txn.getSourceRef());
+                sourceStats.duplicate.incrementAndGet();
 				return;
 			}
 
@@ -86,24 +89,27 @@ public class IngestionWorker implements Runnable {
 			
 			// hand off to BlockingQueue for settlement processor
 			blockingQueue.put(txn);
-			System.out.println("QUEUED txn: " + txn.getSourceRef() + " | Queue size now: " + blockingQueue.size());
+            sourceStats.queued.incrementAndGet();
 
 			
 			
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
-			System.out.println("Thread interrupted for " + sourceType);
+            sourceStats.failed.incrementAndGet();
+            LOGGER.warning("Ingestion worker interrupted for " + sourceType.name());
 
 		} catch (IllegalArgumentException e) {
-			System.out.println("Skipping line from " + sourceType + ": " + e.getMessage());
+            sourceStats.rejected.incrementAndGet();
+            LOGGER.fine("Rejected payload from " + sourceType.name() + ": " + e.getMessage());
 
 		} catch (RuntimeException e) {
 			String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
-			System.out.println("DB/Runtime ERROR for source [" + sourceType + "]: " + msg);
+            sourceStats.failed.incrementAndGet();
+            LOGGER.warning("DB/runtime error for source [" + sourceType + "]: " + msg);
 
 		} catch (Exception e) {
-			System.out.println("Unexpected ERROR for source [" + sourceType + "]: " + e.getMessage());
-			e.printStackTrace();
+            sourceStats.failed.incrementAndGet();
+            LOGGER.warning("Unexpected error for source [" + sourceType + "]: " + e.getMessage());
 		}
 	}
 }

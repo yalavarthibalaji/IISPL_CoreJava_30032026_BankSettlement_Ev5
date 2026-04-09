@@ -17,6 +17,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
+
+import com.iispl.banksettlement.utility.PhaseLogger;
 
 /**
  * ReconciliationServiceImpl — Implements ReconciliationService.
@@ -48,6 +51,7 @@ import java.util.List;
  * PACKAGE: com.iispl.banksettlement.service.impl
  */
 public class ReconciliationServiceImpl implements ReconciliationService {
+    private static final Logger LOGGER = Logger.getLogger(ReconciliationServiceImpl.class.getName());
 
     private final NpciMemberAccountDao  npciAccountDao;
     private final NettingPositionDao    nettingPositionDao;
@@ -57,27 +61,25 @@ public class ReconciliationServiceImpl implements ReconciliationService {
         this.npciAccountDao          = new NpciMemberAccountDaoImpl();
         this.nettingPositionDao      = new NettingPositionDaoImpl();
         this.reconciliationEntryDao  = new ReconciliationEntryDaoImpl();
+        PhaseLogger.configureReadableConsole(LOGGER);
     }
 
     @Override
     public List<ReconciliationEntry> runReconciliation() {
 
-        System.out.println("\n================================================");
-        System.out.println("  RECONCILIATION ENGINE — STARTING");
-        System.out.println("  Date: " + LocalDate.now());
-        System.out.println("================================================\n");
+        LOGGER.info("Reconciliation engine started on " + LocalDate.now());
 
         // STEP 1: Load all NPCI member accounts
         List<NpciMemberAccount> accounts = npciAccountDao.findAll();
         if (accounts.isEmpty()) {
-            System.out.println("[Reconciliation] No NPCI member accounts found. Run phase3_schema_changes.sql first.");
+            LOGGER.info("No NPCI member accounts found. Run phase3_schema_changes.sql first.");
             return new ArrayList<>();
         }
 
         // STEP 2: Load all netting positions
         List<NettingPosition> positions = nettingPositionDao.findAll();
         if (positions.isEmpty()) {
-            System.out.println("[Reconciliation] No netting positions found. Run netting engine first.");
+            LOGGER.info("No netting positions found. Run netting engine first.");
         }
 
         List<ReconciliationEntry> entries = new ArrayList<>();
@@ -151,19 +153,14 @@ public class ReconciliationServiceImpl implements ReconciliationService {
 
     private void printReconciliationReport(List<ReconciliationEntry> entries) {
 
-        System.out.println("\n================================================");
-        System.out.println("  RECONCILIATION REPORT");
-        System.out.println("  Date: " + LocalDate.now());
-        System.out.println("================================================");
-        System.out.println(String.format("\n  %-20s  %15s  %15s  %15s  %10s",
-                "Bank", "Opening Bal", "Expected", "Actual", "Status"));
-        System.out.println("  " + "-".repeat(80));
+        LOGGER.info("RECONCILIATION REPORT - " + LocalDate.now());
+        LOGGER.info(String.format("%-20s | %15s | %15s | %15s | %10s", "Bank", "Opening Bal", "Expected", "Actual", "Status"));
 
         int matched   = 0;
         int unmatched = 0;
 
         for (ReconciliationEntry entry : entries) {
-            System.out.println(String.format("  %-20s  %15.2f  %15.2f  %15.2f  %10s",
+            LOGGER.info(String.format("%-20s | %15.2f | %15.2f | %15.2f | %10s",
                     entry.getBankName(),
                     entry.getExpectedAmount(),
                     entry.getExpectedAmount(),
@@ -174,22 +171,20 @@ public class ReconciliationServiceImpl implements ReconciliationService {
                 matched++;
             } else {
                 unmatched++;
-                System.out.println("    *** UNMATCHED — Variance: "
+                LOGGER.warning("UNMATCHED - Variance: "
                         + String.format("%,.2f", entry.getVariance())
                         + " | " + entry.getRemarks());
             }
         }
 
-        System.out.println("\n  Total: " + entries.size()
+        LOGGER.info("Total: " + entries.size()
                 + " | Matched: " + matched
                 + " | Unmatched: " + unmatched);
 
         if (unmatched == 0) {
-            System.out.println("  ✓ ALL NPCI ACCOUNTS RECONCILED SUCCESSFULLY.");
+            LOGGER.info("All NPCI accounts reconciled successfully.");
         } else {
-            System.out.println("  ✗ " + unmatched + " ACCOUNT(S) HAVE DISCREPANCIES. INVESTIGATION NEEDED.");
+            LOGGER.warning(unmatched + " account(s) have discrepancies. Investigation needed.");
         }
-
-        System.out.println("================================================\n");
     }
 }

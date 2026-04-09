@@ -10,11 +10,13 @@ import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * ReversalTransactionDaoImpl — updated with from_bank, to_bank, incoming_txn_id.
  */
 public class ReversalTransactionDaoImpl implements ReversalTransactionDao {
+    private static final Logger LOGGER = Logger.getLogger(ReversalTransactionDaoImpl.class.getName());
 
     @Override
     public void save(ReversalTransaction txn) {
@@ -64,7 +66,7 @@ public class ReversalTransactionDaoImpl implements ReversalTransactionDao {
             if (keys.next()) txn.setTxnId(keys.getLong(1));
             keys.close();
 
-            System.out.println("[ReversalTransactionDaoImpl] Saved | txn_id: " + txn.getTxnId()
+            LOGGER.fine("[ReversalTransactionDaoImpl] Saved | txn_id: " + txn.getTxnId()
                     + " | ref: " + txn.getReferenceNumber()
                     + " | originalRef: " + txn.getOriginalTxnRef()
                     + " | fromBank: " + txn.getFromBank()

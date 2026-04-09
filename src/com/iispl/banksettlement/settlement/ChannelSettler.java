@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.logging.Logger;
 
 import com.iispl.banksettlement.dao.CreditTransactionDao;
 import com.iispl.banksettlement.dao.DebitTransactionDao;
@@ -24,8 +25,10 @@ import com.iispl.banksettlement.entity.SettlementRecord;
 import com.iispl.banksettlement.enums.BatchStatus;
 import com.iispl.banksettlement.enums.SettlementStatus;
 import com.iispl.banksettlement.enums.TransactionStatus;
+import com.iispl.banksettlement.utility.PhaseLogger;
 
 public class ChannelSettler {
+    private static final Logger LOGGER = Logger.getLogger(ChannelSettler.class.getName());
 
     private final SettlementBatchDao batchDao;
     private final CreditTransactionDao creditDao;
@@ -39,6 +42,7 @@ public class ChannelSettler {
         this.debitDao = new DebitTransactionDaoImpl();
         this.interbankDao = new InterBankTransactionDaoImpl();
         this.reversalDao = new ReversalTransactionDaoImpl();
+        PhaseLogger.configureReadableConsole(LOGGER);
     }
 
     // -----------------------------------------------------------------------
@@ -47,7 +51,7 @@ public class ChannelSettler {
 
     public void settleCbsBatch(List<SettlementItem> items) {
 
-        System.out.println("\n--- [CBS] Settling " + items.size() + " transaction(s) ---");
+        LOGGER.info("[CBS] Settling " + items.size() + " transactions.");
 
         String batchId = buildBatchId("CBS");
         SettlementBatch batch = new SettlementBatch(batchId, LocalDate.now(), "SETTLEMENT_ENGINE");
@@ -70,8 +74,7 @@ public class ChannelSettler {
                     batchDao.saveRecord(rec);
                     batch.addRecord(rec);
                     settled++;
-                    System.out.println("[CBS] CREDIT settled | ref: " + txn.getReferenceNumber() + " | amount: "
-                            + txn.getAmount());
+                    LOGGER.fine("[CBS] CREDIT settled | ref: " + txn.getReferenceNumber() + " | amount: " + txn.getAmount());
 
                 } else if ("DEBIT".equals(item.getTxnType())) {
                     DebitTransaction txn = item.getDebit();
@@ -83,8 +86,7 @@ public class ChannelSettler {
                     batchDao.saveRecord(rec);
                     batch.addRecord(rec);
                     settled++;
-                    System.out.println(
-                            "[CBS] DEBIT settled | ref: " + txn.getReferenceNumber() + " | amount: " + txn.getAmount());
+                    LOGGER.fine("[CBS] DEBIT settled | ref: " + txn.getReferenceNumber() + " | amount: " + txn.getAmount());
                 }
 
             } catch (Exception e) {
@@ -102,7 +104,7 @@ public class ChannelSettler {
 
     public void settleRtgsBatch(List<SettlementItem> items) {
 
-        System.out.println("\n--- [RTGS] Settling " + items.size() + " interbank transaction(s) GROSS ---");
+        LOGGER.info("[RTGS] Settling " + items.size() + " interbank transactions (gross).");
 
         String batchId = buildBatchId("RTGS");
         SettlementBatch batch = new SettlementBatch(batchId, LocalDate.now(), "SETTLEMENT_ENGINE");
@@ -125,8 +127,8 @@ public class ChannelSettler {
                 batchDao.saveRecord(rec);
                 batch.addRecord(rec);
                 settled++;
-                System.out.println("[RTGS] GROSS settled | ref: " + txn.getReferenceNumber() + " | amount: "
-                        + txn.getAmount() + " | correspondent: " + txn.getCorrespondentBankCode());
+                LOGGER.fine("[RTGS] GROSS settled | ref: " + txn.getReferenceNumber() + " | amount: " + txn.getAmount()
+                        + " | correspondent: " + txn.getCorrespondentBankCode());
 
             } catch (Exception e) {
                 failed++;
@@ -143,7 +145,7 @@ public class ChannelSettler {
 
     public void settleNeftBatch(List<SettlementItem> items) {
 
-        System.out.println("\n--- [NEFT] Settling " + items.size() + " transaction(s) using NET settlement ---");
+        LOGGER.info("[NEFT] Settling " + items.size() + " transactions (net).");
 
         String batchId = buildBatchId("NEFT");
         SettlementBatch batch = new SettlementBatch(batchId, LocalDate.now(), "SETTLEMENT_ENGINE");
@@ -164,10 +166,8 @@ public class ChannelSettler {
 
         BigDecimal netAmount = totalCredits.subtract(totalDebits);
 
-        System.out.println("[NEFT] ── Netting Summary ──");
-        System.out.println("[NEFT] Gross Credits : " + totalCredits);
-        System.out.println("[NEFT] Gross Debits  : " + totalDebits);
-        System.out.println("[NEFT] Net Amount    : " + netAmount
+        LOGGER.info("[NEFT] Netting summary -> Gross Credits: " + totalCredits + ", Gross Debits: " + totalDebits
+                + ", Net Amount: " + netAmount
                 + (netAmount.compareTo(BigDecimal.ZERO) >= 0 ? "  ← NET CREDIT POSITION (more money received)"
                         : "  ← NET DEBIT POSITION  (more money sent)"));
 
@@ -187,7 +187,7 @@ public class ChannelSettler {
                     batchDao.saveRecord(rec);
                     batch.addRecord(rec);
                     settled++;
-                    System.out.println("[NEFT] CREDIT recorded (net) | ref: " + txn.getReferenceNumber() + " | amount: "
+                    LOGGER.fine("[NEFT] CREDIT recorded (net) | ref: " + txn.getReferenceNumber() + " | amount: "
                             + txn.getAmount());
 
                 } else if ("DEBIT".equals(item.getTxnType())) {
@@ -200,7 +200,7 @@ public class ChannelSettler {
                     batchDao.saveRecord(rec);
                     batch.addRecord(rec);
                     settled++;
-                    System.out.println("[NEFT] DEBIT recorded (net) | ref: " + txn.getReferenceNumber() + " | amount: "
+                    LOGGER.fine("[NEFT] DEBIT recorded (net) | ref: " + txn.getReferenceNumber() + " | amount: "
                             + txn.getAmount());
                 }
             } catch (Exception e) {
@@ -210,8 +210,7 @@ public class ChannelSettler {
         }
 
         // Print final net position
-        System.out.println("[NEFT] ── Net Settlement Applied ──");
-        System.out.println("[NEFT] Net amount: " + netAmount
+        LOGGER.info("[NEFT] Net settlement applied. Net amount: " + netAmount
                 + (netAmount.compareTo(BigDecimal.ZERO) >= 0 ? " → Bank receives this net amount via RBI clearing"
                         : " → Bank pays this net amount via RBI clearing"));
 
@@ -224,8 +223,7 @@ public class ChannelSettler {
 
     public void settleUpiBatch(List<SettlementItem> items) {
 
-        System.out
-                .println("\n--- [UPI] Settling " + items.size() + " VPA transaction(s) (no balance update) ---");
+        LOGGER.info("[UPI] Settling " + items.size() + " VPA transactions (no balance update).");
 
         String batchId = buildBatchId("UPI");
         SettlementBatch batch = new SettlementBatch(batchId, LocalDate.now(), "SETTLEMENT_ENGINE");
@@ -246,8 +244,8 @@ public class ChannelSettler {
                 batchDao.saveRecord(rec);
                 batch.addRecord(rec);
                 settled++;
-                System.out.println("[UPI] Settled (VPA, no balance update) | ref: " + txn.getReferenceNumber()
-                        + " | amount: " + txn.getAmount());
+                LOGGER.fine("[UPI] Settled (VPA, no balance update) | ref: " + txn.getReferenceNumber() + " | amount: "
+                        + txn.getAmount());
 
             } catch (Exception e) {
                 failed++;
@@ -264,7 +262,7 @@ public class ChannelSettler {
 
     public void settleFtBatch(List<SettlementItem> items) {
 
-        System.out.println("\n--- [FT] Settling " + items.size() + " FinTech transaction(s) (best effort) ---");
+        LOGGER.info("[FT] Settling " + items.size() + " FinTech transactions (best effort).");
 
         String batchId = buildBatchId("FT");
         SettlementBatch batch = new SettlementBatch(batchId, LocalDate.now(), "SETTLEMENT_ENGINE");
@@ -286,7 +284,7 @@ public class ChannelSettler {
                     batchDao.saveRecord(rec);
                     batch.addRecord(rec);
                     settled++;
-                    System.out.println("[FT] CREDIT settled | ref: " + txn.getReferenceNumber());
+                    LOGGER.fine("[FT] CREDIT settled | ref: " + txn.getReferenceNumber());
 
                 } else if ("DEBIT".equals(item.getTxnType())) {
                     DebitTransaction txn = item.getDebit();
@@ -298,7 +296,7 @@ public class ChannelSettler {
                     batchDao.saveRecord(rec);
                     batch.addRecord(rec);
                     settled++;
-                    System.out.println("[FT] DEBIT settled | ref: " + txn.getReferenceNumber());
+                    LOGGER.fine("[FT] DEBIT settled | ref: " + txn.getReferenceNumber());
 
                 } else if ("REVERSAL".equals(item.getTxnType())) {
                     ReversalTransaction txn = item.getReversal();
@@ -310,7 +308,7 @@ public class ChannelSettler {
                     batchDao.saveRecord(rec);
                     batch.addRecord(rec);
                     settled++;
-                    System.out.println("[FT] REVERSAL settled | ref: " + txn.getReferenceNumber() + " | originalRef: "
+                    LOGGER.fine("[FT] REVERSAL settled | ref: " + txn.getReferenceNumber() + " | originalRef: "
                             + txn.getOriginalTxnRef());
                 }
 
@@ -364,7 +362,7 @@ public class ChannelSettler {
             // Don't let status update failure hide the original error
         }
 
-        System.out.println("[SettlementEngine] FAILED | channel: " + item.getChannel() + " | type: " + item.getTxnType()
+        LOGGER.warning("[SettlementEngine] FAILED | channel: " + item.getChannel() + " | type: " + item.getTxnType()
                 + " | ref: " + ref + " | reason: " + reason);
 
         try {
@@ -374,7 +372,7 @@ public class ChannelSettler {
             batchDao.saveRecord(rec);
             batch.addRecord(rec);
         } catch (Exception e) {
-            System.out.println("[SettlementEngine] Could not save FAILED record: " + e.getMessage());
+            LOGGER.warning("[SettlementEngine] Could not save FAILED record: " + e.getMessage());
         }
     }
 
@@ -390,7 +388,7 @@ public class ChannelSettler {
             batch.setBatchStatus(BatchStatus.FAILED);
         }
         batchDao.updateBatch(batch);
-        System.out.println("[" + channel + "] Batch finalized | batchId: " + batch.getBatchId() + " | status: "
+        LOGGER.info("[" + channel + "] Batch finalized | batchId: " + batch.getBatchId() + " | status: "
                 + batch.getBatchStatus() + " | settled: " + settled + " | failed: " + failed + " | totalAmount: "
                 + batch.getTotalAmount());
     }

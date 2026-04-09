@@ -8,6 +8,7 @@ import com.iispl.connectionpool.ConnectionPool;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * NettingPositionDaoImpl — JDBC implementation for netting_position table.
@@ -18,6 +19,7 @@ import java.util.List;
  *   from_bank_name, to_bank_name, created_at, updated_at, created_by, version
  */
 public class NettingPositionDaoImpl implements NettingPositionDao {
+    private static final Logger LOGGER = Logger.getLogger(NettingPositionDaoImpl.class.getName());
 
     private static final String SQL_INSERT =
             "INSERT INTO netting_position " +
@@ -53,7 +55,7 @@ public class NettingPositionDaoImpl implements NettingPositionDao {
             if (keys.next()) position.setPositionId(keys.getLong(1));
             keys.close();
 
-            System.out.println("[NettingPositionDao] Saved | positionId: " + position.getPositionId()
+            LOGGER.fine("[NettingPositionDao] Saved | positionId: " + position.getPositionId()
                     + " | " + position.getFromBankName() + " → " + position.getToBankName()
                     + " | net: " + position.getNetAmount() + " | dir: " + position.getDirection());
         } catch (SQLException e) {
