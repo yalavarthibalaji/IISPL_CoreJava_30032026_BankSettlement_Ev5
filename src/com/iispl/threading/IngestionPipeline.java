@@ -1,11 +1,11 @@
 package com.iispl.threading;
 
+import com.iispl.adapter.AdapterRegistry;
 import com.iispl.connectionpool.ConnectionPool;
 import com.iispl.dao.IncomingTransactionDao;
 import com.iispl.dao.impl.IncomingTransactionDaoImpl;
 import com.iispl.entity.IncomingTransaction;
 import com.iispl.enums.SourceType;
-import com.iispl.registry.AdapterRegistry;
 import com.iispl.utility.PhaseLogger;
 
 import java.util.concurrent.BlockingQueue;
