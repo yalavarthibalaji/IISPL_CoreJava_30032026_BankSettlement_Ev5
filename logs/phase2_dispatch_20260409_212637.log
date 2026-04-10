@@ -1,9 +1,0 @@
-2026-04-09 21:26:37 | INFO    | ==================================================
-2026-04-09 21:26:37 | INFO    | PHASE START : STEP 2 - TRANSACTION DISPATCH
-2026-04-09 21:26:37 | INFO    | LOG FILE    : logs\phase2_dispatch_20260409_212637.log
-2026-04-09 21:26:37 | INFO    | ==================================================
-2026-04-09 21:26:40 | INFO    | Incoming QUEUED records before dispatch: 125
-2026-04-09 21:26:40 | INFO    | Found 125 QUEUED transactions.
-2026-04-09 21:28:05 | INFO    | Dispatch output -> CREDIT: 80, DEBIT: 23, INTERBANK: 21, REVERSAL: 1
-2026-04-09 21:28:05 | INFO    | Dispatch completed successfully.
-2026-04-09 21:28:05 | INFO    | PHASE COMPLETE: STEP 2 - TRANSACTION DISPATCH (phase2_dispatch)

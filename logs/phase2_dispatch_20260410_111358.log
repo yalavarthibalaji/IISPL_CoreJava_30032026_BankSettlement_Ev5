@@ -1,0 +1,6 @@
+2026-04-10 11:13:58 | INFO    | ==================================================
+2026-04-10 11:13:58 | INFO    | PHASE START : STEP 2 - TRANSACTION DISPATCH
+2026-04-10 11:13:58 | INFO    | LOG FILE    : logs/phase2_dispatch_20260410_111358.log
+2026-04-10 11:13:58 | INFO    | ==================================================
+2026-04-10 11:13:58 | INFO    | Incoming QUEUED records before dispatch: 125
+2026-04-10 11:13:59 | INFO    | Found 125 QUEUED transactions.
