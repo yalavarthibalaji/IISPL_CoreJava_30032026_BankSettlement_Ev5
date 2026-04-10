@@ -49,7 +49,7 @@ public class FileIngestionTest {
 	// Example Mac/Linux:
 	// "/Users/yourname/workspace/BankSettlement/src/com/iispl/banksettlement/testfiles/"
 	// -----------------------------------------------------------------------
-	private static final String FILE_BASE_PATH = "src/com/iispl/banksettlement/testfiles/";
+	private static final String FILE_BASE_PATH = "src/com/iispl/testfiles/";
 
 	public static void main(String[] args) {
 

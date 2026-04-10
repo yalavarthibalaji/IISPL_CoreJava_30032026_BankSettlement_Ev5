@@ -1,0 +1,6 @@
+2026-04-10 13:52:42 | INFO    | ==================================================
+2026-04-10 13:52:42 | INFO    | PHASE START : STEP 4 - NETTING ENGINE
+2026-04-10 13:52:42 | INFO    | LOG FILE    : logs/phase4_netting_20260410_135242.log
+2026-04-10 13:52:42 | INFO    | ==================================================
+2026-04-10 13:52:51 | INFO    | Netting completed. Positions: 11
+2026-04-10 13:52:51 | INFO    | PHASE COMPLETE: STEP 4 - NETTING ENGINE (phase4_netting)
