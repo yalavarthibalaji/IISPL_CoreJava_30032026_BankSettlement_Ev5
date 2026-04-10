@@ -1,0 +1,21 @@
+2026-04-10 09:49:00 | INFO    | ==================================================
+2026-04-10 09:49:00 | INFO    | PHASE START : STEP 1 - FILE INGESTION
+2026-04-10 09:49:00 | INFO    | LOG FILE    : logs/phase1_ingestion_20260410_094900.log
+2026-04-10 09:49:00 | INFO    | ==================================================
+2026-04-10 09:49:00 | INFO    | Ingestion pipeline initialized.
+2026-04-10 09:49:00 | INFO    | Reading CBS_CSV file: src/com/iispl/banksettlement/testfiles/cbs_transactions.csv
+2026-04-10 09:49:00 | SEVERE  | Error reading file: src/com/iispl/banksettlement/testfiles/cbs_transactions.csv | src/com/iispl/banksettlement/testfiles/cbs_transactions.csv (No such file or directory)
+2026-04-10 09:49:00 | INFO    | Reading RTGS_XML file: src/com/iispl/banksettlement/testfiles/rtgs_transactions.xml
+2026-04-10 09:49:00 | SEVERE  | Error reading file: src/com/iispl/banksettlement/testfiles/rtgs_transactions.xml | src/com/iispl/banksettlement/testfiles/rtgs_transactions.xml
+2026-04-10 09:49:00 | INFO    | Reading NEFT_TXT file: src/com/iispl/banksettlement/testfiles/neft_transactions.txt
+2026-04-10 09:49:00 | SEVERE  | Error reading file: src/com/iispl/banksettlement/testfiles/neft_transactions.txt | src/com/iispl/banksettlement/testfiles/neft_transactions.txt (No such file or directory)
+2026-04-10 09:49:00 | INFO    | Reading UPI_JSON file: src/com/iispl/banksettlement/testfiles/upi_transactions.json
+2026-04-10 09:49:00 | SEVERE  | Error reading file: src/com/iispl/banksettlement/testfiles/upi_transactions.json | src/com/iispl/banksettlement/testfiles/upi_transactions.json (No such file or directory)
+2026-04-10 09:49:00 | INFO    | Reading FINTECH_JSON file: src/com/iispl/banksettlement/testfiles/fintech_transactions.json
+2026-04-10 09:49:00 | SEVERE  | Error reading file: src/com/iispl/banksettlement/testfiles/fintech_transactions.json | src/com/iispl/banksettlement/testfiles/fintech_transactions.json (No such file or directory)
+2026-04-10 09:49:00 | INFO    | All files submitted. Waiting for workers to finish.
+2026-04-10 09:49:00 | INFO    | Shutting down ingestion workers...
+2026-04-10 09:49:00 | INFO    | Ingestion workers stopped. Queue size: 0
+2026-04-10 09:49:00 | INFO    | Ingestion summary by source:
+2026-04-10 09:49:00 | INFO    | Ingestion completed successfully.
+2026-04-10 09:49:00 | INFO    | PHASE COMPLETE: STEP 1 - FILE INGESTION (phase1_ingestion)
